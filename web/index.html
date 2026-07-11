@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>herdview</title>
+<style>
+  :root {
+    --bg:#f2f5f3; --surface:#fff; --surface-2:#eaeeeb; --border:#d7ded9;
+    --ink:#171b1e; --muted:#55606a; --faint:#8b95a0;
+    --accent:#2b7563; --accent-ink:#1f5749; --accent-soft:#e0efe9;
+    --working:#9a6716; --working-soft:#f4ead4;
+    --blocked:#a83535; --blocked-soft:#f6e3e3;
+    --idle:#2f8a57; --idle-soft:#e2f0e8;
+    --term-bg:#f4f6f4;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0f1216; --surface:#161b21; --surface-2:#1d232b; --border:#29303a;
+      --ink:#e6eaee; --muted:#99a3ae; --faint:#69737e;
+      --accent:#4fb89d; --accent-ink:#7fd3bd; --accent-soft:#15291f;
+      --working:#e0a339; --working-soft:#2a2314;
+      --blocked:#e06a6a; --blocked-soft:#2c1a1a;
+      --idle:#6bc98a; --idle-soft:#152a1e;
+      --term-bg:#0b0e12;
+    }
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;overflow-x:hidden;overscroll-behavior:none;}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;display:flex;flex-direction:column;
+    position:fixed;top:0;right:0;bottom:0;left:0;overflow:hidden;}
+  header{flex:0 0 auto;z-index:2;background:color-mix(in srgb,var(--bg) 88%,transparent);
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--border);
+    padding:calc(env(safe-area-inset-top) + .8rem) 1.1rem .8rem;
+    display:flex;align-items:center;gap:.7rem;}
+  h1{font-size:1.12rem;letter-spacing:-.01em;margin:0;font-weight:640;flex:1;}
+  h1 .g{color:var(--accent);}
+  .count{font-family:var(--mono);font-size:.72rem;color:var(--muted);}
+  .back{appearance:none;border:1px solid var(--border);background:var(--surface);color:var(--ink);
+    font-family:var(--mono);font-size:.8rem;border-radius:8px;padding:.35rem .6rem;cursor:pointer;}
+  .back:active{transform:translateY(1px);}
+
+  main{max-width:660px;margin:0 auto;padding:1rem 1.1rem;width:100%;flex:1;min-height:0;
+    display:flex;flex-direction:column;gap:.7rem;overflow:hidden;}
+  .scroller{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;touch-action:pan-y;
+    -webkit-overflow-scrolling:touch;display:flex;flex-direction:column;gap:.7rem;padding-bottom:.5rem;}
+
+  /* grid */
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:13px;
+    padding:.9rem 1rem;box-shadow:0 1px 2px rgba(0,0,0,.05);display:flex;flex-direction:column;gap:.45rem;
+    border-left:3px solid var(--border);cursor:pointer;-webkit-tap-highlight-color:transparent;}
+  .card:active{transform:scale(.995);}
+  .card.blocked{border-left-color:var(--blocked);}
+  .card.working{border-left-color:var(--working);}
+  .card.idle{border-left-color:var(--idle);}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:.6rem;}
+  .name{font-weight:620;font-size:1rem;}
+  .name .chev{color:var(--faint);font-weight:400;}
+  .path{font-family:var(--mono);font-size:.74rem;color:var(--faint);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .branch{font-family:var(--mono);font-size:.72rem;color:var(--accent-ink);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .group{font-family:var(--mono);font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--accent-ink);padding:.45rem .2rem .1rem;position:sticky;top:0;background:var(--bg);z-index:1;}
+  .newwt{appearance:none;border:1px solid var(--border);background:var(--surface);color:var(--accent-ink);
+    font-size:1.05rem;line-height:1;border-radius:8px;padding:.15rem .5rem;cursor:pointer;-webkit-tap-highlight-color:transparent;}
+  .newwt:active{transform:translateY(1px);}
+  .sheet-ov{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:10;display:flex;align-items:flex-end;justify-content:center;}
+  .sheet{background:var(--surface);border:1px solid var(--border);border-radius:16px 16px 0 0;width:100%;max-width:660px;
+    padding:.8rem .8rem calc(env(safe-area-inset-bottom) + .8rem);display:flex;flex-direction:column;gap:.5rem;}
+  .sheet-h{font-family:var(--mono);font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
+    padding:.3rem .4rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .sheet-b{appearance:none;text-align:left;border:1px solid var(--border);background:var(--surface);color:var(--ink);
+    border-radius:12px;padding:.75rem .85rem;font-size:.98rem;font-weight:620;cursor:pointer;
+    display:flex;flex-direction:column;gap:.15rem;-webkit-tap-highlight-color:transparent;}
+  .sheet-b span{font-weight:400;font-size:.78rem;color:var(--muted);}
+  .sheet-b.cancel{text-align:center;font-weight:500;color:var(--muted);}
+  .sheet-b:active{transform:scale(.99);}
+  .pill{font-family:var(--mono);font-size:.66rem;letter-spacing:.06em;text-transform:uppercase;
+    padding:.22rem .55rem;border-radius:999px;display:inline-flex;align-items:center;gap:.38rem;white-space:nowrap;}
+  .pill .dot{width:.5rem;height:.5rem;border-radius:50%;}
+  .pill.blocked{background:var(--blocked-soft);color:var(--blocked);} .pill.blocked .dot{background:var(--blocked);}
+  .pill.working{background:var(--working-soft);color:var(--working);} .pill.working .dot{background:var(--working);animation:pulse 1.1s ease-in-out infinite;}
+  .pill.idle{background:var(--idle-soft);color:var(--idle);} .pill.idle .dot{background:var(--idle);}
+  .pill.unknown{background:var(--surface-2);color:var(--muted);} .pill.unknown .dot{background:var(--faint);}
+  .meta{font-family:var(--mono);font-size:.72rem;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:.5rem;}
+  .rename{appearance:none;border:none;background:transparent;color:var(--accent-ink);cursor:pointer;
+    font-family:var(--mono);font-size:.68rem;padding:.15rem .3rem;-webkit-tap-highlight-color:transparent;}
+  .rename:active{opacity:.6;}
+  .focus{color:var(--accent-ink);}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+  @media(prefers-reduced-motion:reduce){.pill .dot{animation:none!important;}}
+  .empty,.error{text-align:center;color:var(--muted);font-size:.9rem;padding:2.5rem 1rem;}
+  .error{color:var(--blocked);font-family:var(--mono);font-size:.78rem;}
+
+  /* detail */
+  .detail{display:flex;flex-direction:column;gap:.7rem;flex:1;min-height:0;}
+  .term{background:var(--term-bg);border:1px solid var(--border);border-radius:11px;
+    padding:.8rem .9rem;font-family:var(--mono);font-size:.76rem;line-height:1.5;color:var(--ink);
+    white-space:pre-wrap;word-break:break-word;overflow-y:auto;
+    height:min(52vh,420px);}
+  .convo{flex:1;min-height:0;border:1px solid var(--border);border-radius:14px;background:var(--surface-2);
+    padding:.85rem .7rem;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;touch-action:pan-y;
+    display:flex;flex-direction:column;scroll-behavior:smooth;-webkit-overflow-scrolling:touch;}
+  .msg{display:flex;max-width:82%;margin-top:.5rem;}
+  .msg.grouped{margin-top:.14rem;}
+  .msg.pending{opacity:.55;}
+  .msg.user{align-self:flex-end;justify-content:flex-end;}
+  .msg.assistant{align-self:flex-start;}
+  .bubble{padding:.5rem .72rem;border-radius:17px;font-size:.9rem;line-height:1.42;
+    white-space:pre-wrap;word-break:break-word;box-shadow:0 1px 1px rgba(0,0,0,.06);}
+  .msg.user .bubble{background:var(--accent);color:#fff;border-bottom-right-radius:5px;}
+  .msg.assistant .bubble{background:var(--surface);border:1px solid var(--border);color:var(--ink);border-bottom-left-radius:5px;}
+  .bubble a{color:inherit;text-decoration:underline;text-underline-offset:2px;word-break:break-all;}
+  .msg.assistant .bubble a{color:var(--accent-ink);}
+  .convo pre.term a{color:var(--accent-ink);word-break:break-all;}
+  .bubble .md-p{margin:0;}
+  .bubble .md-p + .md-p, .bubble .md-p + .md-list, .bubble .md-list + .md-p, .bubble .md-h{margin-top:.45rem;}
+  .bubble .md-h{font-weight:650;}
+  .bubble .md-list{margin:.35rem 0;padding-left:1.25rem;}
+  .bubble .md-list li{margin:.12rem 0;}
+  .bubble strong{font-weight:650;}
+  .bubble em{font-style:italic;}
+  .bubble code{font-family:var(--mono);font-size:.82em;background:var(--surface-2);border:1px solid var(--border);
+    border-radius:5px;padding:.04em .32em;}
+  .bubble pre.md-code{background:var(--code-bg);border:1px solid var(--border);border-radius:9px;
+    padding:.55rem .7rem;overflow-x:auto;margin:.4rem 0;max-width:100%;}
+  .bubble pre.md-code code{background:none;border:none;padding:0;font-size:.8em;white-space:pre;display:block;}
+  .msg.user .bubble code,.msg.user .bubble pre.md-code{background:rgba(255,255,255,.15);border-color:rgba(255,255,255,.3);}
+  .tools{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem;}
+  .toolchip{font-family:var(--mono);font-size:.63rem;background:var(--surface-2);border:1px solid var(--border);
+    color:var(--muted);border-radius:6px;padding:.12rem .4rem;}
+  .msg.user .toolchip{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.28);color:#fff;}
+  .sys{align-self:center;font-family:var(--mono);font-size:.65rem;color:var(--muted);
+    background:var(--surface);border:1px solid var(--border);border-radius:999px;
+    padding:.22rem .62rem;margin-top:.5rem;max-width:90%;text-align:center;}
+  .typing{align-self:flex-start;display:flex;gap:.28rem;align-items:center;margin-top:.5rem;
+    padding:.62rem .82rem;background:var(--surface);border:1px solid var(--border);
+    border-radius:17px;border-bottom-left-radius:5px;}
+  .typing span{width:.44rem;height:.44rem;border-radius:50%;background:var(--faint);animation:blink 1.3s infinite;}
+  .typing span:nth-child(2){animation-delay:.18s;} .typing span:nth-child(3){animation-delay:.36s;}
+  @keyframes blink{0%,70%,100%{opacity:.25;transform:translateY(0);}35%{opacity:1;transform:translateY(-2px);}}
+  .convo pre.term{margin:0;width:100%;font-family:var(--mono);font-size:.75rem;line-height:1.5;
+    white-space:pre-wrap;word-break:break-word;color:var(--ink);}
+  .msgs{display:flex;flex-direction:column;}
+  .statusslot{display:flex;flex-direction:column;gap:.4rem;}
+  .statusslot:empty{display:none;}
+  .actpill{align-self:flex-start;margin-top:0;font-family:var(--mono);font-size:.72rem;
+    color:var(--working);background:var(--working-soft);border:1px solid var(--working);
+    border-radius:999px;padding:.34rem .72rem;display:inline-flex;align-items:center;gap:.4rem;
+    appearance:none;cursor:pointer;-webkit-tap-highlight-color:transparent;}
+  .actpill:active{transform:scale(.97);}
+  .runpanel{align-self:stretch;margin-top:.4rem;background:var(--working-soft);border:1px solid var(--working);
+    border-radius:12px;padding:.75rem .85rem;}
+  .runpanel .permh{color:var(--working);}
+  .runhead{display:flex;justify-content:space-between;align-items:center;}
+  .minbtn{appearance:none;border:none;background:transparent;color:var(--working);
+    font-size:.95rem;line-height:1;cursor:pointer;padding:.1rem .35rem;margin:-.2rem -.2rem 0 0;}
+  @media(prefers-reduced-motion:reduce){.typing span{animation:none!important;}.convo{scroll-behavior:auto!important;}}
+  .keys{display:flex;flex-direction:column;gap:.5rem;}
+  .permcard{background:var(--blocked-soft);border:1px solid var(--blocked);border-radius:12px;padding:.75rem .85rem;}
+  .permh{font-family:var(--mono);font-size:.68rem;letter-spacing:.05em;color:var(--blocked);margin-bottom:.35rem;}
+  .permname{font-weight:640;font-size:.92rem;}
+  .permcmd{margin:.35rem 0 0;background:var(--code-bg);border:1px solid var(--border);border-radius:8px;
+    padding:.55rem .65rem;font-family:var(--mono);font-size:.76rem;line-height:1.45;
+    white-space:pre-wrap;word-break:break-word;overflow:auto;max-height:38vh;}
+  .permbtns{display:flex;flex-wrap:wrap;gap:.45rem;}
+  .key{appearance:none;border:1px solid var(--border);background:var(--surface);color:var(--ink);
+    font-family:var(--mono);font-size:.78rem;border-radius:9px;padding:.5rem .7rem;cursor:pointer;}
+  .key:active{transform:translateY(1px);}
+  .key.go{background:var(--accent);color:#fff;border-color:transparent;}
+  .key.warn{background:var(--blocked-soft);color:var(--blocked);border-color:transparent;}
+  .prompt{display:flex;gap:.5rem;align-items:flex-end;
+    position:sticky;bottom:0;padding-bottom:calc(env(safe-area-inset-bottom) + .3rem);}
+  .prompt textarea{flex:1;resize:none;border:1px solid var(--border);border-radius:11px;
+    background:var(--surface);color:var(--ink);font-family:var(--sans);font-size:.95rem;
+    padding:.65rem .8rem;min-height:2.7rem;max-height:8rem;}
+  .prompt textarea:focus{outline:2px solid var(--accent);outline-offset:1px;}
+  .send{appearance:none;border:none;background:var(--accent);color:#fff;font-weight:600;
+    border-radius:11px;padding:0 1rem;height:2.7rem;cursor:pointer;font-size:.95rem;}
+  .send:disabled{opacity:.5;}
+  .hint{font-family:var(--mono);font-size:.68rem;color:var(--faint);text-align:center;}
+  footer{max-width:660px;margin:1rem auto 1.5rem;padding:0 1.1rem;font-family:var(--mono);
+    font-size:.68rem;color:var(--faint);text-align:center;}
+</style>
+</head>
+<body>
+  <header>
+    <button class="back" id="back" hidden>← back</button>
+    <h1 id="title"><span class="g">❯</span> herd<span class="g">view</span></h1>
+    <span class="count" id="count">—</span>
+    <button class="newwt" id="newwt" type="button" title="new worktree">＋</button>
+  </header>
+  <main id="app"><div class="empty">Loading agents…</div></main>
+  <footer id="foot">mirroring this herdr session · v0.3</footer>
+
+<script>
+  const STATE_ORDER = { blocked:0, working:1, idle:2, unknown:3 };
+  const app = document.getElementById("app");
+  const title = document.getElementById("title");
+  const count = document.getElementById("count");
+  const back = document.getElementById("back");
+  const foot = document.getElementById("foot");
+  const newwt = document.getElementById("newwt");
+
+  let view = { name:"grid", pane:null, agent:null };
+  let timer = null;
+  let lastAgents = [];
+
+  const shortPath = p => { if(!p) return ""; const a=p.split("/").filter(Boolean); return a.length<=2?p:"…/"+a.slice(-2).join("/"); };
+  const esc = s => (s||"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+  // w3:p1 → "workspace 3 · pane 1" (raw id kept as tooltip)
+  const prettyPane = id => { const m = /^w(\d+):p(\d+)$/.exec(id || ""); return m ? `workspace ${m[1]} · pane ${m[2]}` : (id || ""); };
+
+  // Append text to a node, turning http(s) URLs into real links. Built as DOM
+  // nodes (never innerHTML) and restricted to http/https — no injection surface.
+  function linkify(parent, text){
+    const re = /(https?:\/\/[^\s<>]+)/g;
+    let last = 0, m;
+    while((m = re.exec(text)) !== null){
+      let url = m[0];
+      const trail = url.match(/[.,;:!?)\]}'"]+$/);   // don't swallow trailing punctuation
+      if(trail) url = url.slice(0, -trail[0].length);
+      if(!url){ continue; }
+      const start = m.index, end = start + url.length;
+      if(start > last) parent.appendChild(document.createTextNode(text.slice(last, start)));
+      const a = document.createElement("a");
+      a.href = url; a.textContent = url; a.target = "_blank"; a.rel = "noopener noreferrer";
+      parent.appendChild(a);
+      last = end; re.lastIndex = end;
+    }
+    if(last < text.length) parent.appendChild(document.createTextNode(text.slice(last)));
+  }
+
+  // --- minimal, safe markdown rendering (DOM nodes only; http/https links) ---
+  function mdEmph(parent, text){
+    const re = /(\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_)/g;
+    let last = 0, m;
+    while((m = re.exec(text)) !== null){
+      if(m.index > last) linkify(parent, text.slice(last, m.index));
+      const bold = m[2] !== undefined || m[3] !== undefined;
+      const el = document.createElement(bold ? "strong" : "em");
+      el.textContent = m[2] ?? m[3] ?? m[4] ?? m[5];
+      parent.appendChild(el);
+      last = m.index + m[0].length;
+    }
+    if(last < text.length) linkify(parent, text.slice(last));
+  }
+  function mdInline(parent, text){
+    text.split(/(`[^`]+`)/g).forEach((seg, idx) => {
+      if(idx % 2 === 1){ const c = document.createElement("code"); c.textContent = seg.slice(1, -1); parent.appendChild(c); return; }
+      const lre = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+      let last = 0, m;
+      while((m = lre.exec(seg)) !== null){
+        if(m.index > last) mdEmph(parent, seg.slice(last, m.index));
+        const a = document.createElement("a"); a.href = m[2]; a.textContent = m[1]; a.target = "_blank"; a.rel = "noopener noreferrer";
+        parent.appendChild(a); last = m.index + m[0].length;
+      }
+      if(last < seg.length) mdEmph(parent, seg.slice(last));
+    });
+  }
+  function renderMarkdown(parent, text){
+    const lines = (text || "").split("\n");
+    let i = 0, list = null;
+    const closeList = () => { if(list){ parent.appendChild(list); list = null; } };
+    while(i < lines.length){
+      const line = lines[i];
+      if(/^\s*```/.test(line)){                                   // fenced code
+        closeList(); i++; const buf = [];
+        while(i < lines.length && !/^\s*```\s*$/.test(lines[i])){ buf.push(lines[i]); i++; }
+        i++;
+        const pre = document.createElement("pre"); pre.className = "md-code";
+        const code = document.createElement("code"); code.textContent = buf.join("\n");
+        pre.appendChild(code); parent.appendChild(pre); continue;
+      }
+      const h = line.match(/^(#{1,6})\s+(.*)$/);
+      if(h){ closeList(); const d = document.createElement("div"); d.className = "md-h"; mdInline(d, h[2]); parent.appendChild(d); i++; continue; }
+      const bul = line.match(/^\s*[-*+]\s+(.*)$/), ord = line.match(/^\s*\d+\.\s+(.*)$/);
+      if(bul || ord){
+        const tag = bul ? "ul" : "ol";
+        if(!list || list.tagName.toLowerCase() !== tag){ closeList(); list = document.createElement(tag); list.className = "md-list"; }
+        const li = document.createElement("li"); mdInline(li, bul ? bul[1] : ord[1]); list.appendChild(li); i++; continue;
+      }
+      closeList();
+      if(line.trim() === ""){ i++; continue; }
+      const para = document.createElement("div"); para.className = "md-p"; let first = true;
+      while(i < lines.length && lines[i].trim() !== "" && !/^\s*```/.test(lines[i]) &&
+            !/^#{1,6}\s+/.test(lines[i]) && !/^\s*[-*+]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i])){
+        if(!first) para.appendChild(document.createElement("br"));
+        mdInline(para, lines[i]); first = false; i++;
+      }
+      parent.appendChild(para);
+    }
+    closeList();
+  }
+
+  async function api(path, opts){ const r = await fetch(path,{cache:"no-store",...opts}); if(!r.ok) throw new Error("HTTP "+r.status); return r; }
+
+  // Demo mode: when served without a backend (as an artifact), render baked-in
+  // sample data so the UI is testable from a link. Never true on the local http
+  // server (localhost/tailnet are plain http, not a claude.ai host).
+  const DEMO = /(^|\.)claude(usercontent)?\.ai$|anthropic\.com$/.test(location.hostname)
+            || new URLSearchParams(location.search).has("demo");
+  const DEMO_DATA = {
+    agents: [
+      {pane_id:"w1:p5", workspace_id:"w1", agent:"claude", agent_status:"blocked",  cwd:"/home/dev/code/acme-api", branch:"fix/login-bug", focused:false},
+      {pane_id:"w3:p1", workspace_id:"w3", agent:"claude", agent_status:"working",  cwd:"/home/dev/code/acme-api", branch:"feat/checkout-flow", focused:true},
+      {pane_id:"w1:p1", workspace_id:"w1", agent:"claude", agent_status:"idle",     cwd:"/home/dev/code/acme-web", branch:"main", focused:false}
+    ],
+    transcripts: {
+      "w3:p1": { session_id:"demo", messages:[
+        {role:"user", text:"can you add clickable links and render markdown in the chat?"},
+        {role:"assistant", text:"Yes — done. Here's what changed:\n\n- **Clickable links** like https://herdr.dev open in a new tab\n- *Markdown*: **bold**, `inline code`, lists, and fenced code blocks\n\n```go\nfunc main() {\n    http.ListenAndServe(\":8848\", nil)\n}\n```\n\nRefresh and tap an agent to see it."},
+        {role:"assistant", tools:[{name:"Bash", summary:"go build -o herdview ./cmd/herdview"}]}
+      ]},
+      "w1:p5": { session_id:"demo2", messages:[
+        {role:"user", text:"run the checkout tests"},
+        {role:"assistant", text:"Running the test suite now."},
+        {role:"assistant", tools:[{name:"Bash", summary:"npm test -- --runInBand src/checkout"}]}
+      ]}
+    },
+    reads: { "w1:p1": "(idle — no recent output)", "w3:p1": "✳ Vibing… (34s · ↓ 3.1k tokens)" }
+  };
+
+  async function fetchAgents(){
+    if(DEMO) return DEMO_DATA.agents;
+    return await (await api("/api/agents")).json();
+  }
+  async function fetchTranscript(pane){
+    if(DEMO) return DEMO_DATA.transcripts[pane] || null;
+    const r = await fetch("/api/pane/transcript?pane="+encodeURIComponent(pane),{cache:"no-store"});
+    return r.ok ? await r.json() : null;
+  }
+  async function fetchRead(pane){
+    if(DEMO) return DEMO_DATA.reads[pane] || "(no output)";
+    return await (await api("/api/pane/read?pane="+encodeURIComponent(pane))).text();
+  }
+  async function sendMsg(pane, text){
+    if(DEMO) return;
+    await api("/api/pane/send?pane="+encodeURIComponent(pane), {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
+  }
+  async function sendKeys(pane, keys){
+    if(DEMO) return;
+    await api("/api/pane/key?pane="+encodeURIComponent(pane), {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({keys})});
+  }
+  async function sendRename(pane, name){
+    if(DEMO){ const a=DEMO_DATA.agents.find(x=>x.pane_id===pane); if(a){ if(name) a.name=name; else delete a.name; } return; }
+    await api("/api/pane/rename?pane="+encodeURIComponent(pane), {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
+  }
+  async function renameAgent(a){
+    const name = prompt("Rename agent (leave blank to reset):", a.name || "");
+    if(name === null) return;
+    try { await sendRename(a.pane_id, name.trim()); await renderGrid(); }
+    catch(e){ alert("rename failed: "+e.message); }
+  }
+  async function sendNewWorktree(cwd, name){
+    if(DEMO){ DEMO_DATA.agents.unshift({pane_id:"w9:p1",workspace_id:"w9",agent:"claude",agent_status:"working",cwd,branch:name,focused:false}); return; }
+    await api("/api/worktree", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cwd,name})});
+  }
+  async function newWorktree(){
+    const base = lastAgents.find(a=>a.focused) || lastAgents[0];
+    if(!base){ alert("No agent to derive a repo from."); return; }
+    const name = prompt(`New worktree — branch name\n(repo: ${shortPath(base.cwd)}, launches a Claude agent)`, "");
+    if(name === null) return;
+    const n = name.trim(); if(!n) return;
+    try { await sendNewWorktree(base.cwd, n); setTimeout(renderGrid, 600); }
+    catch(e){ alert("worktree create failed: "+e.message); }
+  }
+  async function sendNewAgent(cwd){
+    if(DEMO){ DEMO_DATA.agents.unshift({pane_id:"w9:p2",workspace_id:"w9",agent:"claude",agent_status:"working",cwd,branch:(lastAgents[0]||{}).branch,focused:false}); return; }
+    await api("/api/agent", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cwd})});
+  }
+  async function newAgent(){
+    const base = lastAgents.find(a=>a.focused) || lastAgents[0];
+    const dir = prompt("New agent — working directory (opens a new tab, no branch):", base ? base.cwd : "");
+    if(dir === null) return;
+    const d = dir.trim(); if(!d) return;
+    try { await sendNewAgent(d); setTimeout(renderGrid, 600); }
+    catch(e){ alert("agent start failed: "+e.message); }
+  }
+  // ＋ opens a small sheet: new agent (new tab) or new worktree (new branch).
+  function openNewMenu(){
+    const base = lastAgents.find(a=>a.focused) || lastAgents[0];
+    const repo = base ? shortPath(base.cwd) : "—";
+    const ov = document.createElement("div"); ov.className = "sheet-ov";
+    ov.innerHTML = `
+      <div class="sheet">
+        <div class="sheet-h">new in ${esc(repo)}</div>
+        <button class="sheet-b" data-act="agent">＋ New agent<span>a fresh tab running Claude — no branch</span></button>
+        <button class="sheet-b" data-act="worktree">⎇ New worktree<span>new git branch + a Claude agent</span></button>
+        <button class="sheet-b cancel" data-act="cancel">Cancel</button>
+      </div>`;
+    ov.addEventListener("click", e => {
+      const b = e.target.closest("[data-act]");
+      if(!b){ if(e.target === ov) ov.remove(); return; }
+      ov.remove();
+      if(b.dataset.act === "agent") newAgent();
+      else if(b.dataset.act === "worktree") newWorktree();
+    });
+    document.body.appendChild(ov);
+  }
+  newwt.onclick = openNewMenu;
+
+  function schedule(fn){ clearInterval(timer); fn(); timer = setInterval(fn, view.name==="grid"?2000:1500); }
+
+  // ---- grid ----
+  function agentCard(a, showBranch){
+    const s = a.agent_status||"unknown";
+    const el = document.createElement("div"); el.className = "card "+s;
+    el.innerHTML = `
+      <div class="row">
+        <span class="name">${esc(a.name || a.agent) || "agent"} <span class="chev">›</span></span>
+        <span class="pill ${s}"><span class="dot"></span>${s}</span>
+      </div>
+      <div class="path">${esc(shortPath(a.cwd))}</div>
+      ${(showBranch && a.branch) ? `<div class="branch">⎇ ${esc(a.branch)}</div>` : ""}
+      <div class="meta">
+        <span title="${esc(a.pane_id)}">${esc(prettyPane(a.pane_id))}${a.focused?' · <span class="focus">focused</span>':""}</span>
+        <button class="rename" type="button">✎ rename</button>
+      </div>`;
+    el.onclick = () => openDetail(a);
+    el.querySelector(".rename").addEventListener("click", e => { e.stopPropagation(); renameAgent(a); });
+    return el;
+  }
+  async function renderGrid(){
+    let agents;
+    try { agents = await fetchAgents(); }
+    catch(e){ app.innerHTML = `<div class="error">can't reach herdr: ${e.message}</div>`; return; }
+    lastAgents = agents;
+    agents.sort((a,b)=>(STATE_ORDER[a.agent_status]??3)-(STATE_ORDER[b.agent_status]??3));
+    const blocked = agents.filter(a=>a.agent_status==="blocked").length;
+    count.textContent = `${agents.length} agent${agents.length===1?"":"s"}`+(blocked?` · ${blocked} need you`:"");
+    if(!agents.length){ app.innerHTML='<div class="empty">No agents in this session.</div>'; return; }
+    // group by git branch (worktree awareness)
+    const groups = {};
+    for(const a of agents){ const k = a.branch || "no branch"; (groups[k] = groups[k] || []).push(a); }
+    const keys = Object.keys(groups).sort((x,y)=>{
+      const bx = groups[x].some(a=>a.agent_status==="blocked") ? 0 : 1;
+      const by = groups[y].some(a=>a.agent_status==="blocked") ? 0 : 1;
+      return bx-by || x.localeCompare(y);
+    });
+    const grouped = keys.length > 1;
+    app.innerHTML="";
+    const scr = document.createElement("div"); scr.className = "scroller";
+    for(const k of keys){
+      if(grouped){ const h=document.createElement("div"); h.className="group"; h.textContent=`⎇ ${k} · ${groups[k].length}`; scr.appendChild(h); }
+      for(const a of groups[k]) scr.appendChild(agentCard(a, !grouped));
+    }
+    app.appendChild(scr);
+  }
+
+  // ---- detail ----
+  function openDetail(a){
+    view = { name:"detail", pane:a.pane_id, agent:a };
+    back.hidden = false; foot.hidden = true; newwt.hidden = true;
+    title.innerHTML = `${esc(a.name || a.agent)} <span class="g">·</span> <span style="font-family:var(--mono);font-size:.78rem;color:var(--muted)" title="${esc(a.pane_id)}">${esc(prettyPane(a.pane_id))}</span>`;
+    app.innerHTML = `
+      <div class="detail">
+        <div class="convo" id="convo">
+          <div class="msgs" id="msgs"><div class="hint">loading…</div></div>
+          <div class="statusslot" id="statusslot"></div>
+        </div>
+        <div class="keys" id="keys"></div>
+        <div class="prompt">
+          <textarea id="msg" rows="1" placeholder="Message this agent…"></textarea>
+          <button class="send" id="sendbtn">Send</button>
+        </div>
+        <div class="hint">types into the live session · Enter = newline · tap Send to send</div>
+      </div>`;
+    const convo = document.getElementById("convo");      // scroll container
+    const msgsEl = document.getElementById("msgs");       // messages only (rebuilt on change)
+    const msg = document.getElementById("msg");
+    const sendBtn = document.getElementById("sendbtn");
+
+    async function send(){
+      const text = msg.value.trim(); if(!text) return;
+      sendBtn.disabled = true;
+      msg.value = ""; msg.style.height = "auto";
+      // optimistic: show my message instantly (dimmed) so there's no wait for the round-trip
+      const om = mkBubble({role:"user", text}); om.classList.add("pending"); msgsEl.appendChild(om); stick();
+      try { await sendMsg(view.pane, text); setTimeout(refresh, 300); }
+      catch(e){ om.remove(); msg.value = text; alert("send failed: "+e.message); }
+      finally { sendBtn.disabled = false; }
+    }
+    async function key(...keys){
+      try { await sendKeys(view.pane, keys); setTimeout(refresh, 250); }
+      catch(e){ alert("key failed: "+e.message); }
+    }
+    sendBtn.onclick = send;
+    // Enter inserts a newline (normal chat-app behavior); sending is the button only.
+    msg.addEventListener("input", () => { msg.style.height="auto"; msg.style.height=Math.min(msg.scrollHeight,128)+"px"; });
+
+    // stay pinned to the bottom unless the user scrolls up to read history
+    let pinned = true, lastSig = null, lastText = null, workingSince = null, showRun = false, actMode = null, lastAct = null;
+    convo.addEventListener("scroll", () => {
+      pinned = convo.scrollHeight - convo.scrollTop - convo.clientHeight < 80;
+    });
+    const stick = () => { if(pinned) convo.scrollTop = convo.scrollHeight; };
+
+    schedule(refresh);
+    async function refresh(){
+      let agents=[]; try{ agents = await fetchAgents(); }catch{}
+      const cur = agents.find(x=>x.pane_id===view.pane) || view.agent;
+      const status = cur.agent_status||"unknown";
+      if(status==="working"){ if(!workingSince) workingSince=Date.now(); }
+      else if(status==="idle"){ workingSince=null; }   // keep the timer through transient blocked/unknown flickers
+      let msgs=null, readText=null;
+      try {
+        const tr = await fetchTranscript(view.pane);
+        if(tr){ msgs=tr.messages; renderConvo(msgs, status); renderKeys(status, lastPending(msgs)); }
+        else { readText = await fetchRead(view.pane); renderText(readText, status); renderKeys(status, null); }
+      } catch(e){ renderText("can't read pane: "+e.message, status); renderKeys(status, null); }
+      renderActivity(status, activityFor(status, msgs));
+    }
+    // Quick "thinking" blip vs a longer run. Elapsed is measured from when this
+    // working episode began — reliable and starts at 0, so the dots always show
+    // first and the pill appears once it crosses the threshold. The tool name
+    // (if the agent is mid tool_use) labels what's running.
+    function activityFor(status, msgs){
+      if(status !== "working") return null;
+      const act = {};
+      const pend = lastPending(msgs || []);
+      if(pend && pend.length){ act.tool = pend.map(t=>t.name).join(" · "); act.pending = pend; }
+      if(workingSince) act.elapsed = Math.floor((Date.now() - workingSince) / 1000);
+      return act;
+    }
+    function lastPending(msgs){
+      for(let i=(msgs||[]).length-1; i>=0; i--){ const m=msgs[i]; if(m.role==="user") break; if(m.role==="assistant" && m.tools && m.tools.length) return m.tools; }
+      return null;
+    }
+
+    function mkBubble(m){
+      const wrap = document.createElement("div");
+      wrap.className = "msg " + (m.role==="user"?"user":"assistant");
+      const b = document.createElement("div"); b.className = "bubble";
+      if(m.text){ if(m.role === "assistant") renderMarkdown(b, m.text); else linkify(b, m.text); }
+      if(m.tools && m.tools.length){
+        const tw = document.createElement("div"); tw.className = "tools";
+        for(const t of m.tools){ const c=document.createElement("span"); c.className="toolchip"; c.textContent="⚙ "+t.name; if(t.summary) c.title=t.summary; tw.appendChild(c); }
+        b.appendChild(tw);
+      }
+      wrap.appendChild(b); return wrap;
+    }
+    const mkSys = t => { const s=document.createElement("div"); s.className="sys"; s.textContent=t; return s; };
+    const mkTyping = () => { const t=document.createElement("div"); t.className="typing"; t.innerHTML="<span></span><span></span><span></span>"; return t; };
+
+    function fmtElapsed(s){ return s < 60 ? s+"s" : Math.floor(s/60)+"m "+String(s%60).padStart(2,"0")+"s"; }
+    function pillLabel(act){
+      let t = act.tool ? ("⚙ "+act.tool) : "✳ Working";
+      if(act.elapsed != null) t += " · " + fmtElapsed(act.elapsed);
+      if(act.pending && act.pending.length) t += "  ▸";   // tap to inspect / stop
+      return t;
+    }
+    function mkActPill(act){
+      const el = document.createElement("button"); el.className = "actpill"; el.type = "button";
+      el.textContent = pillLabel(act);
+      // Always tappable — drawRunPanel reads the freshest command at tap time, so
+      // it works even if no tool was pending when the pill was first created.
+      el.addEventListener("click", () => { showRun = !showRun; drawRunPanel(); });
+      return el;
+    }
+    // Panel shown when you tap a running tool: the command + interrupt controls.
+    function mkRunPanel(pending){
+      const card = document.createElement("div"); card.className = "runpanel";
+      const h = document.createElement("div"); h.className = "permh runhead";
+      const lbl = document.createElement("span"); lbl.textContent = "running";
+      const min = document.createElement("button"); min.className = "minbtn"; min.type = "button";
+      min.textContent = "✕"; min.setAttribute("aria-label", "minimize");
+      min.addEventListener("click", () => { showRun = false; drawRunPanel(); });
+      h.appendChild(lbl); h.appendChild(min); card.appendChild(h);
+      for(const t of pending){
+        const nm = document.createElement("div"); nm.className = "permname"; nm.textContent = t.name; card.appendChild(nm);
+        if(t.summary){ const pre = document.createElement("pre"); pre.className = "permcmd"; pre.textContent = t.summary; card.appendChild(pre); }
+      }
+      const bar = document.createElement("div"); bar.className = "permbtns";
+      const cc = document.createElement("button"); cc.className = "key warn"; cc.textContent = "⛔ Ctrl-C";
+      cc.addEventListener("click", () => { key("C-c"); showRun = false; drawRunPanel(); });
+      const esc = document.createElement("button"); esc.className = "key"; esc.textContent = "⎋ Esc";
+      esc.addEventListener("click", () => { key("Escape"); showRun = false; drawRunPanel(); });
+      bar.appendChild(cc); bar.appendChild(esc); card.appendChild(bar);
+      return card;
+    }
+    // Toggle the run panel using the freshest activity data, so a tap always shows
+    // the current command with no lag.
+    function drawRunPanel(){
+      const sb = document.getElementById("statusslot"); if(!sb) return;
+      const panel = sb.querySelector(".runpanel");
+      const want = showRun && lastAct && lastAct.pending && lastAct.pending.length;
+      if(want && !panel){ sb.appendChild(mkRunPanel(lastAct.pending)); stick(); }
+      else if(!want && panel){ panel.remove(); }
+    }
+    // Activity lives in a dedicated slot at the bottom of the messages (its own
+    // element), so message re-renders never touch it — no flicker — and the pill
+    // counts up in place. It stays in-flow, so it's always tappable.
+    function renderActivity(status, act){
+      lastAct = act;
+      const sb = document.getElementById("statusslot"); if(!sb) return;
+      if(status !== "working"){ if(actMode){ sb.innerHTML = ""; actMode = null; showRun = false; } return; }
+      const mode = (act && act.elapsed != null && act.elapsed >= 8) ? "pill" : "dots";
+      if(mode !== actMode){                         // structure changed → rebuild once
+        sb.innerHTML = ""; actMode = mode;
+        if(mode === "dots") sb.appendChild(mkTyping());
+        else { sb.appendChild(mkActPill(act)); drawRunPanel(); }
+        stick();
+      } else if(mode === "pill"){                    // same structure → update text in place (no churn)
+        const pill = sb.querySelector(".actpill"); if(pill) pill.textContent = pillLabel(act);
+        drawRunPanel();
+      }
+    }
+
+    function renderConvo(msgs, status){
+      const real = (msgs||[]).filter(m => (m.text&&m.text.trim()) || (m.tools&&m.tools.length));
+      const sig = real.map(m => m.role[0]+":"+((m.text||"").length)+":"+((m.tools||[]).map(t=>t.name).join(","))).join("|");
+      if(sig !== lastSig){                       // rebuild only the messages when the conversation changed
+        lastSig = sig; lastText = null;
+        msgsEl.innerHTML = "";
+        if(!real.length){ msgsEl.appendChild(mkSys("no messages yet")); }
+        let prev = null;
+        for(const m of real){
+          if(m.role==="assistant" && !(m.text&&m.text.trim()) && m.tools && m.tools.length){
+            msgsEl.appendChild(mkSys("⚙ "+m.tools.map(t=>t.name).join(" · ")));   // tool-only turn → system line
+          } else {
+            const node = mkBubble(m);
+            if(prev===m.role) node.classList.add("grouped");
+            msgsEl.appendChild(node);
+          }
+          prev = m.role;
+        }
+      }
+      stick();
+    }
+    function renderText(txt, status){
+      if(txt !== lastText){
+        lastText = txt; lastSig = null;
+        msgsEl.innerHTML = "";
+        const pre = document.createElement("pre"); pre.className = "term"; linkify(pre, txt);
+        msgsEl.appendChild(pre);
+      }
+      stick();
+    }
+    function renderKeys(status, pending){
+      const keys = document.getElementById("keys"); if(!keys) return;
+      if(status !== "blocked"){ keys.innerHTML = ""; return; }
+      keys.innerHTML = "";
+      if(pending && pending.length){
+        const card = document.createElement("div"); card.className = "permcard";
+        const h = document.createElement("div"); h.className = "permh"; h.textContent = "⏸ Waiting for you — wants to:"; card.appendChild(h);
+        for(const t of pending){
+          const nm = document.createElement("div"); nm.className = "permname"; nm.textContent = t.name; card.appendChild(nm);
+          if(t.summary){ const pre = document.createElement("pre"); pre.className = "permcmd"; pre.textContent = t.summary; card.appendChild(pre); }
+        }
+        keys.appendChild(card);
+      }
+      const bar = document.createElement("div"); bar.className = "permbtns";
+      const mkBtn = (label, cls, k) => { const el=document.createElement("button"); el.className="key"+(cls?" "+cls:""); el.textContent=label; el.addEventListener("click", ()=>key(k)); return el; };
+      bar.appendChild(mkBtn("✓ Approve", "go", "Enter"));
+      bar.appendChild(mkBtn("↓", null, "Down"));
+      bar.appendChild(mkBtn("↑", null, "Up"));
+      bar.appendChild(mkBtn("✕ Deny", "warn", "Escape"));
+      keys.appendChild(bar);
+    }
+  }
+
+  back.onclick = () => { view={name:"grid",pane:null,agent:null}; back.hidden=true; foot.hidden=false; newwt.hidden=false;
+    title.innerHTML='<span class="g">❯</span> herd<span class="g">view</span>'; schedule(renderGrid); };
+
+  schedule(renderGrid);
+</script>
+</body>
+</html>

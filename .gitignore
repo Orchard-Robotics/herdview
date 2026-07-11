@@ -1,0 +1,3 @@
+# built binary (produced by `go build` locally, or fetch.sh on install)
+/herdview
+herdview_*_*

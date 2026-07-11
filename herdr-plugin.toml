@@ -1,0 +1,43 @@
+# herdview — a phone-first web mirror of your herdr session.
+#
+# herdview reflects the agents already running in your herdr session into a
+# mobile-friendly web UI: see each agent's state, read its transcript, and send
+# input back — without ever spawning a new "remote-control" Claude session.
+#
+# It is a herdr API client (it drives the herdr CLI / socket exposed to plugins),
+# not a new agent runtime. The web UI is served over local HTTP; view it on your
+# phone via a terminal app's web-preview or over your tailnet.
+
+id = "orchard.herdview"
+name = "herdview"
+version = "0.1.0"
+min_herdr_version = "0.7.3"
+description = "Phone-first web mirror of your herdr session — watch and steer agents from your phone."
+platforms = ["linux", "macos"]
+
+# Fetch the prebuilt binary for this OS/arch from GitHub Releases. End users need
+# no Go toolchain; this runs once at install time.
+[[build]]
+command = ["sh", "scripts/fetch.sh"]
+
+# Start the mirror server (detached background HTTP server).
+[[actions]]
+id = "start"
+title = "Start herdview"
+contexts = ["workspace"]
+command = ["./herdview", "--detach"]
+
+# Stop it.
+[[actions]]
+id = "stop"
+title = "Stop herdview"
+contexts = ["workspace"]
+command = ["./herdview", "--stop"]
+
+# Alternative to the detached action: run the server visibly in a tucked-away
+# pane whose lifetime is the server's. Open via `herdr plugin pane open`.
+[[panes]]
+id = "server"
+title = "herdview server"
+placement = "zoomed"
+command = ["./herdview"]

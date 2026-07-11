@@ -1,0 +1,702 @@
+// Command herdview serves a phone-first web mirror of the current herdr session.
+//
+// It shells out to the herdr CLI (the documented plugin API surface, located via
+// HERDR_BIN_PATH when launched as a plugin) to read live agent state, and serves
+// an embedded mobile web UI. It never launches a new agent of its own — it only
+// reflects and steers the agents that already exist in the session.
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/orchard-robotics/herdview/web"
+)
+
+// paneRe guards the pane id before it reaches an exec argv (defense in depth;
+// args aren't shell-interpreted, but we still reject anything unexpected).
+var paneRe = regexp.MustCompile(`^w\d+:p\d+$`)
+
+// allowHosts is the set of hostnames requests may carry (populated in main).
+var allowHosts = map[string]bool{}
+
+func hostOnly(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return hostport
+}
+
+// guard is defense-in-depth for a loopback server that steers terminals: a
+// Host allowlist blocks DNS-rebinding, and an Origin allowlist blocks cross-site
+// POSTs (CSRF). It adds no login friction — same-origin/loopback traffic passes.
+func guard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !allowHosts[hostOnly(r.Host)] {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if o := r.Header.Get("Origin"); o != "" {
+				if u, err := url.Parse(o); err != nil || !allowHosts[u.Hostname()] {
+					http.Error(w, "forbidden origin", http.StatusForbidden)
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// herdrBin resolves the herdr executable. herdr injects HERDR_BIN_PATH into
+// plugin processes; outside a plugin context we fall back to PATH.
+func herdrBin() string {
+	if p := os.Getenv("HERDR_BIN_PATH"); p != "" {
+		return p
+	}
+	return "herdr"
+}
+
+// runHerdr executes a herdr CLI subcommand and returns its stdout. A short
+// timeout keeps a wedged socket from hanging HTTP handlers.
+func runHerdr(args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, herdrBin(), args...).Output()
+}
+
+// Agent is the subset of a herdr agent record the UI needs.
+type Agent struct {
+	Pane      string `json:"pane_id"`
+	Workspace string `json:"workspace_id"`
+	Tab       string `json:"tab_id"`
+	Agent     string `json:"agent"`
+	Name      string `json:"name,omitempty"`   // custom display name (herdr agent rename)
+	Status    string `json:"agent_status"`
+	Cwd       string `json:"cwd"`
+	Branch    string `json:"branch,omitempty"` // git branch of the agent's cwd (worktree awareness)
+	Focused   bool   `json:"focused"`
+}
+
+// gitBranch returns the current branch of a checkout, or "" if it isn't a repo.
+func gitBranch(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// herdr wraps single-command results as {"result": {...}}.
+type agentListResult struct {
+	Result struct {
+		Agents []Agent `json:"agents"`
+	} `json:"result"`
+}
+
+// handleAgents returns the live agent list. This is the read side of the mirror.
+func handleAgents(w http.ResponseWriter, r *http.Request) {
+	out, err := runHerdr("agent", "list")
+	if err != nil {
+		http.Error(w, "herdr agent list failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	var res agentListResult
+	if err := json.Unmarshal(out, &res); err != nil {
+		http.Error(w, "could not parse herdr output: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	agents := res.Result.Agents
+	if agents == nil {
+		agents = []Agent{}
+	}
+	// tag each agent with its git branch (deduped by cwd) for worktree awareness
+	branchByCwd := map[string]string{}
+	for i := range agents {
+		cwd := agents[i].Cwd
+		b, ok := branchByCwd[cwd]
+		if !ok {
+			b = gitBranch(cwd)
+			branchByCwd[cwd] = b
+		}
+		agents[i].Branch = b
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(agents)
+}
+
+// validPane extracts and validates the ?pane= query parameter.
+func validPane(w http.ResponseWriter, r *http.Request) (string, bool) {
+	p := r.URL.Query().Get("pane")
+	if !paneRe.MatchString(p) {
+		http.Error(w, "bad or missing pane id", http.StatusBadRequest)
+		return "", false
+	}
+	return p, true
+}
+
+// handleRead returns a pane's recent output as plain text. Interim transcript
+// source until the structured-JSONL view lands; it's Claude's own terminal text,
+// not a framebuffer.
+func handleRead(w http.ResponseWriter, r *http.Request) {
+	pane, ok := validPane(w, r)
+	if !ok {
+		return
+	}
+	out, err := runHerdr("pane", "read", pane, "--source", "recent", "--lines", "200", "--format", "text")
+	if err != nil {
+		http.Error(w, "herdr pane read failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write(out)
+}
+
+// handleSend types text into a pane and submits it (Enter) — a prompt to a
+// running agent. This steers an existing session; it never starts a new one.
+func handleSend(w http.ResponseWriter, r *http.Request) {
+	pane, ok := validPane(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Text == "" {
+		http.Error(w, "expected JSON {text}", http.StatusBadRequest)
+		return
+	}
+	if _, err := runHerdr("pane", "send-text", pane, body.Text); err != nil {
+		http.Error(w, "send failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if _, err := runHerdr("pane", "send-keys", pane, "Enter"); err != nil {
+		http.Error(w, "submit failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleKey sends raw keystrokes to a pane — for driving menus (approve/deny a
+// permission prompt, Esc to cancel, digit to pick an option).
+func handleKey(w http.ResponseWriter, r *http.Request) {
+	pane, ok := validPane(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Keys []string `json:"keys"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Keys) == 0 {
+		http.Error(w, "expected JSON {keys:[...]}", http.StatusBadRequest)
+		return
+	}
+	args := append([]string{"pane", "send-keys", pane}, body.Keys...)
+	if _, err := runHerdr(args...); err != nil {
+		http.Error(w, "send-keys failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- pane → transcript mapping (populated by the `herdview hook` Claude hook) ----
+
+func stateDir() string {
+	if d := os.Getenv("HERDVIEW_STATE_DIR"); d != "" {
+		return d
+	}
+	return filepath.Join(os.Getenv("HOME"), ".local", "state", "herdview")
+}
+
+func mapPath(pane string) string {
+	safe := strings.NewReplacer(":", "_", "/", "_").Replace(pane)
+	return filepath.Join(stateDir(), "panes", safe+".json")
+}
+
+// paneMap links a herdr pane to the Claude session running inside it.
+type paneMap struct {
+	Pane           string `json:"pane"`
+	SessionID      string `json:"session_id"`
+	TranscriptPath string `json:"transcript_path"`
+	Cwd            string `json:"cwd"`
+	Updated        int64  `json:"updated"`
+}
+
+// runHook is invoked as a Claude Code hook (`herdview hook`). It reads the hook
+// payload on stdin and records which transcript belongs to the herdr pane the
+// agent runs in (HERDR_PANE_ID). It must never fail loudly or block Claude.
+func runHook() {
+	pane := os.Getenv("HERDR_PANE_ID")
+	if pane == "" {
+		return // not inside herdr; nothing to map
+	}
+	var p struct {
+		SessionID      string `json:"session_id"`
+		TranscriptPath string `json:"transcript_path"`
+		Cwd            string `json:"cwd"`
+	}
+	_ = json.NewDecoder(os.Stdin).Decode(&p)
+	if p.TranscriptPath == "" {
+		return
+	}
+	rec, _ := json.Marshal(paneMap{
+		Pane: pane, SessionID: p.SessionID, TranscriptPath: p.TranscriptPath,
+		Cwd: p.Cwd, Updated: time.Now().Unix(),
+	})
+	dst := mapPath(pane)
+	if os.MkdirAll(filepath.Dir(dst), 0o755) != nil {
+		return
+	}
+	// atomic per-pane write avoids cross-hook races.
+	tmp := dst + ".tmp"
+	if os.WriteFile(tmp, rec, 0o644) == nil {
+		_ = os.Rename(tmp, dst)
+	}
+}
+
+// readTail returns up to maxBytes from the end of a file, starting at the first
+// complete line, bounding cost on multi-MB transcripts.
+func readTail(path string, maxBytes int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	var start int64
+	if st.Size() > maxBytes {
+		start = st.Size() - maxBytes
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+	if start > 0 {
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			data = data[i+1:]
+		}
+	}
+	return data, nil
+}
+
+// uiMsg is a rendered conversation turn.
+type uiMsg struct {
+	Role  string     `json:"role"` // "user" | "assistant"
+	Text  string     `json:"text,omitempty"`
+	Tools []toolInfo `json:"tools,omitempty"` // tool_use calls in an assistant turn
+}
+
+// toolInfo is a tool call with the field most relevant to deciding whether to
+// approve it (the Bash command, the file path, …), so a blocked agent's pending
+// action is visible in the UI.
+type toolInfo struct {
+	Name    string `json:"name"`
+	Summary string `json:"summary,omitempty"`
+}
+
+func toolSummary(name string, input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal(input, &m) != nil {
+		return ""
+	}
+	pick := func(keys ...string) string {
+		for _, k := range keys {
+			if s, ok := m[k].(string); ok && s != "" {
+				return s
+			}
+		}
+		return ""
+	}
+	var s string
+	switch name {
+	case "Bash":
+		s = pick("command")
+	case "Edit", "MultiEdit", "Write", "Read", "NotebookEdit":
+		s = pick("file_path", "notebook_path", "path")
+	case "Glob", "Grep":
+		s = pick("pattern", "query")
+	}
+	if s == "" {
+		b, _ := json.Marshal(m)
+		s = string(b)
+	}
+	if len(s) > 4000 {
+		s = s[:4000] + "…"
+	}
+	return s
+}
+
+// parseTranscript turns transcript JSONL into simple user/assistant turns.
+func parseTranscript(data []byte) []uiMsg {
+	out := []uiMsg{}
+	for _, raw := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(raw)) == 0 {
+			continue
+		}
+		var l struct {
+			Type    string `json:"type"`
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(raw, &l) != nil {
+			continue
+		}
+		switch l.Type {
+		case "user":
+			var s string
+			if json.Unmarshal(l.Message.Content, &s) == nil {
+				if strings.TrimSpace(s) != "" {
+					out = append(out, uiMsg{Role: "user", Text: s})
+				}
+				continue
+			}
+			var blocks []struct{ Type, Text string }
+			if json.Unmarshal(l.Message.Content, &blocks) == nil {
+				var txt []string
+				for _, b := range blocks {
+					if b.Type == "text" && b.Text != "" {
+						txt = append(txt, b.Text)
+					}
+				}
+				if len(txt) > 0 {
+					out = append(out, uiMsg{Role: "user", Text: strings.Join(txt, "\n")})
+				}
+			}
+		case "assistant":
+			var blocks []struct {
+				Type  string
+				Text  string
+				Name  string
+				Input json.RawMessage
+			}
+			if json.Unmarshal(l.Message.Content, &blocks) == nil {
+				var txt []string
+				var tools []toolInfo
+				for _, b := range blocks {
+					if b.Type == "text" && b.Text != "" {
+						txt = append(txt, b.Text)
+					}
+					if b.Type == "tool_use" && b.Name != "" {
+						tools = append(tools, toolInfo{Name: b.Name, Summary: toolSummary(b.Name, b.Input)})
+					}
+				}
+				if len(txt) > 0 || len(tools) > 0 {
+					out = append(out, uiMsg{Role: "assistant", Text: strings.Join(txt, "\n"), Tools: tools})
+				}
+			}
+		}
+	}
+	return out
+}
+
+// ---- hook-free pane → transcript resolution ----
+//
+// Claude writes ~/.claude/sessions/<pid>.json (sessionId + cwd) for each running
+// session. herdr gives us a pane's PID, so we can resolve the transcript with no
+// Claude hook and no config edits: pane → pid → sessions file → transcript.
+
+type sessionFile struct {
+	SessionID string `json:"sessionId"`
+	Cwd       string `json:"cwd"`
+}
+
+func readSessionFile(pid int) (sessionFile, bool) {
+	b, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".claude", "sessions", strconv.Itoa(pid)+".json"))
+	if err != nil {
+		return sessionFile{}, false
+	}
+	var sf sessionFile
+	if json.Unmarshal(b, &sf) != nil || sf.SessionID == "" {
+		return sessionFile{}, false
+	}
+	return sf, true
+}
+
+// ppid reads the parent pid from /proc/<pid>/stat (comm can contain spaces, so
+// parse after the last ')').
+func ppid(pid int) int {
+	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0
+	}
+	s := string(b)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 {
+		return 0
+	}
+	f := strings.Fields(s[i+1:])
+	if len(f) < 2 {
+		return 0
+	}
+	p, _ := strconv.Atoi(f[1]) // state, ppid, ...
+	return p
+}
+
+// paneSession resolves the Claude session running in a pane. The foreground
+// process may be a tool subprocess, so we walk up the process tree to the
+// claude process that owns a sessions file.
+func paneSession(pane string) (sessionFile, bool) {
+	out, err := runHerdr("pane", "process-info", "--pane", pane)
+	if err != nil {
+		return sessionFile{}, false
+	}
+	var pi struct {
+		Result struct {
+			ProcessInfo struct {
+				ShellPID int `json:"shell_pid"`
+				Fg       []struct {
+					PID int `json:"pid"`
+				} `json:"foreground_processes"`
+			} `json:"process_info"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(out, &pi) != nil {
+		return sessionFile{}, false
+	}
+	seeds := []int{}
+	for _, f := range pi.Result.ProcessInfo.Fg {
+		seeds = append(seeds, f.PID)
+	}
+	seeds = append(seeds, pi.Result.ProcessInfo.ShellPID)
+	for _, pid := range seeds {
+		for p, hops := pid, 0; p > 1 && hops < 8; hops++ {
+			if sf, ok := readSessionFile(p); ok {
+				return sf, true
+			}
+			p = ppid(p)
+		}
+	}
+	return sessionFile{}, false
+}
+
+// findTranscript locates a session's JSONL under ~/.claude/projects (session ids
+// are unique, so a glob avoids depending on Claude's dir-slug rules).
+func findTranscript(sessionID string) string {
+	m, _ := filepath.Glob(filepath.Join(os.Getenv("HOME"), ".claude", "projects", "*", sessionID+".jsonl"))
+	if len(m) > 0 {
+		return m[0]
+	}
+	return ""
+}
+
+// handleTranscript renders the structured conversation for a pane. 404 tells the
+// UI to fall back to the raw pane read.
+func handleTranscript(w http.ResponseWriter, r *http.Request) {
+	pane, ok := validPane(w, r)
+	if !ok {
+		return
+	}
+	var tpath, sid string
+	if sf, ok := paneSession(pane); ok { // hook-free primary path
+		sid = sf.SessionID
+		tpath = findTranscript(sf.SessionID)
+	}
+	if tpath == "" { // fallback: legacy hook-populated map, if present
+		if raw, err := os.ReadFile(mapPath(pane)); err == nil {
+			var m paneMap
+			if json.Unmarshal(raw, &m) == nil {
+				tpath, sid = m.TranscriptPath, m.SessionID
+			}
+		}
+	}
+	if tpath == "" {
+		http.Error(w, "no transcript for pane", http.StatusNotFound)
+		return
+	}
+	tail, err := readTail(tpath, 512*1024)
+	if err != nil {
+		http.Error(w, "read transcript failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	msgs := parseTranscript(tail)
+	if len(msgs) > 80 {
+		msgs = msgs[len(msgs)-80:]
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"session_id": sid, "messages": msgs})
+}
+
+// handleRename sets (or, with an empty name, clears) an agent's custom name.
+func handleRename(w http.ResponseWriter, r *http.Request) {
+	pane, ok := validPane(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "expected JSON {name}", http.StatusBadRequest)
+		return
+	}
+	var err error
+	if name := strings.TrimSpace(body.Name); name == "" {
+		_, err = runHerdr("agent", "rename", pane, "--clear")
+	} else {
+		_, err = runHerdr("agent", "rename", pane, name)
+	}
+	if err != nil {
+		http.Error(w, "rename failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// branchRe is a conservative guard for a branch name reaching the git/herdr CLI.
+var branchRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$`)
+
+// handleNewWorktree creates a git worktree for the given repo (cwd) on a new
+// branch via herdr, then launches a Claude agent in it. It appears in the grid
+// as a new workspace on that branch.
+func handleNewWorktree(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Cwd  string `json:"cwd"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "expected JSON {cwd,name}", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(body.Name)
+	if body.Cwd == "" || !branchRe.MatchString(name) || strings.Contains(name, "..") {
+		http.Error(w, "need a repo cwd and a valid branch name", http.StatusBadRequest)
+		return
+	}
+	out, err := runHerdr("worktree", "create", "--cwd", body.Cwd, "--branch", name, "--json")
+	if err != nil {
+		http.Error(w, "worktree create failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	var res struct {
+		Result struct {
+			RootPane struct {
+				PaneID string `json:"pane_id"`
+			} `json:"root_pane"`
+			Worktree struct {
+				Path string `json:"path"`
+			} `json:"worktree"`
+		} `json:"result"`
+	}
+	_ = json.Unmarshal(out, &res)
+	pane := res.Result.RootPane.PaneID
+	if pane != "" {
+		_, _ = runHerdr("pane", "run", pane, "claude") // launch an agent in the fresh worktree
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"pane": pane, "branch": name, "path": res.Result.Worktree.Path})
+}
+
+// handleNewAgent starts a plain Claude agent in an existing directory (no
+// worktree/branch) — a fresh tab running claude.
+func handleNewAgent(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Cwd string `json:"cwd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Cwd) == "" {
+		http.Error(w, "need a cwd", http.StatusBadRequest)
+		return
+	}
+	out, err := runHerdr("tab", "create", "--cwd", body.Cwd, "--no-focus")
+	if err != nil {
+		http.Error(w, "agent start failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	var res struct {
+		Result struct {
+			RootPane struct {
+				PaneID string `json:"pane_id"`
+			} `json:"root_pane"`
+		} `json:"result"`
+	}
+	_ = json.Unmarshal(out, &res)
+	pane := res.Result.RootPane.PaneID
+	if pane != "" {
+		_, _ = runHerdr("pane", "run", pane, "claude")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"pane": pane})
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func main() {
+	// `herdview hook` runs as a Claude Code hook, not the server.
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		runHook()
+		return
+	}
+
+	addr := flag.String("addr", envOr("HERDVIEW_ADDR", "127.0.0.1:8848"),
+		"listen address (default loopback; set a tailnet address to reach it over Tailscale)")
+	// --detach / --stop are recognized so the manifest actions parse cleanly;
+	// detached lifecycle management is a TODO for v0.2.
+	_ = flag.Bool("detach", false, "run in the background (managed lifecycle)")
+	_ = flag.Bool("stop", false, "stop a running detached server")
+	flag.Parse()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/agents", handleAgents)
+	mux.HandleFunc("/api/pane/read", handleRead)
+	mux.HandleFunc("/api/pane/transcript", handleTranscript)
+	mux.HandleFunc("/api/pane/send", handleSend)
+	mux.HandleFunc("/api/pane/key", handleKey)
+	mux.HandleFunc("/api/pane/rename", handleRename)
+	mux.HandleFunc("/api/worktree", handleNewWorktree)
+	mux.HandleFunc("/api/agent", handleNewAgent)
+	mux.Handle("/", http.FileServer(http.FS(web.FS)))
+
+	// Allowed request hosts: loopback + the bind host, plus any extras from
+	// HERDVIEW_ALLOW_HOSTS (e.g. a tailnet name/IP if you bind there).
+	for _, h := range []string{"localhost", "127.0.0.1", "::1", hostOnly(*addr)} {
+		allowHosts[h] = true
+	}
+	for _, h := range strings.Split(os.Getenv("HERDVIEW_ALLOW_HOSTS"), ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			allowHosts[h] = true
+		}
+	}
+
+	srv := &http.Server{
+		Addr:         *addr,
+		Handler:      guard(mux),
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 15 * time.Second,
+	}
+	fmt.Printf("herdview → http://%s  (herdr: %s)\n", *addr, herdrBin())
+	log.Fatal(srv.ListenAndServe())
+}
