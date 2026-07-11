@@ -150,7 +150,11 @@
     padding:.22rem .62rem;margin-top:.5rem;max-width:90%;text-align:center;}
   .typing{align-self:flex-start;display:flex;gap:.28rem;align-items:center;margin-top:.5rem;
     padding:.62rem .82rem;background:var(--surface);border:1px solid var(--border);
-    border-radius:17px;border-bottom-left-radius:5px;}
+    border-radius:17px;border-bottom-left-radius:5px;
+    appearance:none;cursor:pointer;-webkit-tap-highlight-color:transparent;}
+  .typing:active{transform:scale(.97);}
+  .runpanel .pend{display:flex;flex-direction:column;gap:.2rem;}
+  .runpanel .preview{margin-top:.4rem;}
   .typing span{width:.44rem;height:.44rem;border-radius:50%;background:var(--faint);animation:blink 1.3s infinite;}
   .typing span:nth-child(2){animation-delay:.18s;} .typing span:nth-child(3){animation-delay:.36s;}
   @keyframes blink{0%,70%,100%{opacity:.25;transform:translateY(0);}35%{opacity:1;transform:translateY(-2px);}}
@@ -565,69 +569,78 @@
       wrap.appendChild(b); return wrap;
     }
     const mkSys = t => { const s=document.createElement("div"); s.className="sys"; s.textContent=t; return s; };
-    const mkTyping = () => { const t=document.createElement("div"); t.className="typing"; t.innerHTML="<span></span><span></span><span></span>"; return t; };
+    function mkTyping(){ const b=document.createElement("button"); b.type="button"; b.className="typing"; b.innerHTML="<span></span><span></span><span></span>"; return b; }
 
     function fmtElapsed(s){ return s < 60 ? s+"s" : Math.floor(s/60)+"m "+String(s%60).padStart(2,"0")+"s"; }
     function pillLabel(act){
       let t = act.tool ? ("⚙ "+act.tool) : "✳ Working";
       if(act.elapsed != null) t += " · " + fmtElapsed(act.elapsed);
-      if(act.pending && act.pending.length) t += "  ▸";   // tap to inspect / stop
-      return t;
+      return t + "  ▸";                                  // always a tap affordance
     }
     function mkActPill(act){
       const el = document.createElement("button"); el.className = "actpill"; el.type = "button";
-      el.textContent = pillLabel(act);
-      // Always tappable — drawRunPanel reads the freshest command at tap time, so
-      // it works even if no tool was pending when the pill was first created.
-      el.addEventListener("click", () => { showRun = !showRun; drawRunPanel(); });
-      return el;
+      el.textContent = pillLabel(act); return el;
     }
-    // Panel shown when you tap a running tool: the command + interrupt controls.
-    function mkRunPanel(pending){
-      const card = document.createElement("div"); card.className = "runpanel";
+    // Panel shown when you tap the working indicator: what's running + a live
+    // preview of recent output + interrupt controls (available the whole time).
+    function ensurePanel(){
+      const sb = document.getElementById("statusslot");
+      let p = sb.querySelector(".runpanel"); if(p) return p;
+      p = document.createElement("div"); p.className = "runpanel";
       const h = document.createElement("div"); h.className = "permh runhead";
-      const lbl = document.createElement("span"); lbl.textContent = "running";
+      const lbl = document.createElement("span"); lbl.textContent = "what's happening";
       const min = document.createElement("button"); min.className = "minbtn"; min.type = "button";
       min.textContent = "✕"; min.setAttribute("aria-label", "minimize");
-      min.addEventListener("click", () => { showRun = false; drawRunPanel(); });
-      h.appendChild(lbl); h.appendChild(min); card.appendChild(h);
-      for(const t of pending){
-        const nm = document.createElement("div"); nm.className = "permname"; nm.textContent = t.name; card.appendChild(nm);
-        if(t.summary){ const pre = document.createElement("pre"); pre.className = "permcmd"; pre.textContent = t.summary; card.appendChild(pre); }
-      }
+      min.addEventListener("click", () => { showRun = false; drawPanel(); });
+      h.appendChild(lbl); h.appendChild(min); p.appendChild(h);
+      const pend = document.createElement("div"); pend.className = "pend"; p.appendChild(pend);
+      const prev = document.createElement("pre"); prev.className = "permcmd preview"; prev.textContent = "…"; p.appendChild(prev);
       const bar = document.createElement("div"); bar.className = "permbtns";
       const cc = document.createElement("button"); cc.className = "key warn"; cc.textContent = "⛔ Ctrl-C";
-      cc.addEventListener("click", () => { key("C-c"); showRun = false; drawRunPanel(); toast("Ctrl-C sent"); });
+      cc.addEventListener("click", () => { key("C-c"); toast("Ctrl-C sent"); showRun = false; drawPanel(); });
       const esc = document.createElement("button"); esc.className = "key"; esc.textContent = "⎋ Esc";
-      esc.addEventListener("click", () => { key("Escape"); showRun = false; drawRunPanel(); toast("Esc sent"); });
-      bar.appendChild(cc); bar.appendChild(esc); card.appendChild(bar);
-      return card;
+      esc.addEventListener("click", () => { key("Escape"); toast("Esc sent"); showRun = false; drawPanel(); });
+      bar.appendChild(cc); bar.appendChild(esc); p.appendChild(bar);
+      document.getElementById("statusslot").appendChild(p); return p;
     }
-    // Toggle the run panel using the freshest activity data, so a tap always shows
-    // the current command with no lag.
-    function drawRunPanel(){
+    async function drawPanel(){
       const sb = document.getElementById("statusslot"); if(!sb) return;
-      const panel = sb.querySelector(".runpanel");
-      const want = showRun && lastAct && lastAct.pending && lastAct.pending.length;
-      if(want && !panel){ sb.appendChild(mkRunPanel(lastAct.pending)); stick(); }
-      else if(!want && panel){ panel.remove(); }
+      const existing = sb.querySelector(".runpanel");
+      if(!showRun){ if(existing) existing.remove(); return; }
+      const p = ensurePanel();
+      const pend = p.querySelector(".pend"); pend.innerHTML = "";
+      for(const t of ((lastAct && lastAct.pending) || [])){
+        const nm = document.createElement("div"); nm.className = "permname";
+        nm.textContent = "⚙ " + t.name + (t.summary ? ": " + t.summary : "");
+        pend.appendChild(nm);
+      }
+      try {
+        const txt = await fetchRead(view.pane);
+        const lines = (txt || "").replace(/\s+$/, "").split("\n").slice(-8).join("\n");
+        p.querySelector(".preview").textContent = lines || "(no recent output)";
+      } catch {}
+      stick();
     }
-    // Activity lives in a dedicated slot at the bottom of the messages (its own
-    // element), so message re-renders never touch it — no flicker — and the pill
-    // counts up in place. It stays in-flow, so it's always tappable.
+    // Activity lives in a dedicated slot at the bottom of the messages, so message
+    // re-renders never touch it (no flicker). Both the dots and the pill are
+    // tappable at any time → open the panel to preview + interrupt.
     function renderActivity(status, act){
       lastAct = act;
       const sb = document.getElementById("statusslot"); if(!sb) return;
       if(status !== "working"){ if(actMode){ sb.innerHTML = ""; actMode = null; showRun = false; } return; }
       const mode = (act && act.elapsed != null && act.elapsed >= 8) ? "pill" : "dots";
-      if(mode !== actMode){                         // structure changed → rebuild once
+      if(mode !== actMode){                         // structure changed → rebuild the indicator once
         sb.innerHTML = ""; actMode = mode;
-        if(mode === "dots") sb.appendChild(mkTyping());
-        else { sb.appendChild(mkActPill(act)); drawRunPanel(); }
+        const ind = mode === "pill" ? mkActPill(act) : mkTyping();
+        ind.addEventListener("click", () => { showRun = !showRun; drawPanel(); });
+        sb.appendChild(ind);
+        drawPanel();                                // re-adds the panel if it was open
         stick();
-      } else if(mode === "pill"){                    // same structure → update text in place (no churn)
+      } else if(mode === "pill"){                    // update label in place (no churn)
         const pill = sb.querySelector(".actpill"); if(pill) pill.textContent = pillLabel(act);
-        drawRunPanel();
+        drawPanel();
+      } else {
+        drawPanel();                                // dots mode: keep preview fresh if open
       }
     }
 
