@@ -15,16 +15,25 @@ no runtime for users to install.
 ## Install
 
 herdview ships its prebuilt binaries in the repo (`bin/`), so installing needs
-no download or auth — even from a private repo:
+no download or auth — even from a private repo. The install step also sets up
+**moshi-hook** (the Moshi host agent) so the phone app can detect/forward it.
 
 ```sh
-herdr plugin install <your-org>/herdview     # needs git read access to the repo
-herdr plugin action invoke orchard.herdview.start
+herdr plugin install <your-org>/herdview                 # needs git read access
+herdr plugin pane open --plugin orchard.herdview --entrypoint server
 ```
 
-The `[[build]]` step (`scripts/fetch.sh`) just copies the committed binary for
-your OS/arch to `./herdview`. Maintainers rebuild them with `scripts/build.sh`
-(requires Go) and commit the result.
+Then open `http://127.0.0.1:8848` in Moshi's web-preview — or set
+`HERDVIEW_ADDR=<tailnet-ip>:8848` and browse it directly over Tailscale
+(pass it with `--env HERDVIEW_ADDR=…` on the `pane open`).
+
+To link the Moshi app to a **new** host, pair once (token from the app):
+`moshi-hook pair --token <token> --store file`.
+
+The `[[build]]` step (`scripts/fetch.sh`) copies the committed binary for your
+OS/arch to `./herdview`, and best-effort installs moshi-hook + starts its daemon
+(non-fatal if you don't use Moshi). Maintainers rebuild binaries with
+`scripts/build.sh` (requires Go).
 
 ## What you see
 
