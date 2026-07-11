@@ -80,6 +80,13 @@
   .sheet-b span{font-weight:400;font-size:.78rem;color:var(--muted);}
   .sheet-b.cancel{text-align:center;font-weight:500;color:var(--muted);}
   .sheet-b:active{transform:scale(.99);}
+  .toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 4.6rem);
+    transform:translateX(-50%) translateY(8px);background:var(--ink);color:var(--bg);
+    font-size:.85rem;font-weight:600;padding:.5rem .95rem;border-radius:999px;white-space:nowrap;
+    box-shadow:0 6px 18px rgba(0,0,0,.28);opacity:0;pointer-events:none;z-index:20;
+    transition:opacity .15s ease, transform .15s ease;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  @media(prefers-reduced-motion:reduce){.toast{transition:opacity .15s ease;}}
   .pill{font-family:var(--mono);font-size:.66rem;letter-spacing:.06em;text-transform:uppercase;
     padding:.22rem .55rem;border-radius:999px;display:inline-flex;align-items:center;gap:.38rem;white-space:nowrap;}
   .pill .dot{width:.5rem;height:.5rem;border-radius:50%;}
@@ -218,6 +225,15 @@
   const esc = s => (s||"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
   // w3:p1 → "workspace 3 · pane 1" (raw id kept as tooltip)
   const prettyPane = id => { const m = /^w(\d+):p(\d+)$/.exec(id || ""); return m ? `workspace ${m[1]} · pane ${m[2]}` : (id || ""); };
+  // brief confirmation pill so taps feel acknowledged before the next poll
+  function toast(msg){
+    let t = document.getElementById("hv-toast");
+    if(!t){ t = document.createElement("div"); t.id = "hv-toast"; t.className = "toast"; document.body.appendChild(t); }
+    t.textContent = msg;
+    t.classList.add("show");
+    clearTimeout(t._h);
+    t._h = setTimeout(() => t.classList.remove("show"), 1500);
+  }
 
   // Append text to a node, turning http(s) URLs into real links. Built as DOM
   // nodes (never innerHTML) and restricted to http/https — no injection surface.
@@ -485,7 +501,7 @@
       msg.value = ""; msg.style.height = "auto";
       // optimistic: show my message instantly (dimmed) so there's no wait for the round-trip
       const om = mkBubble({role:"user", text}); om.classList.add("pending"); msgsEl.appendChild(om); stick();
-      try { await sendMsg(view.pane, text); setTimeout(refresh, 300); }
+      try { await sendMsg(view.pane, text); toast("Sent"); setTimeout(refresh, 300); }
       catch(e){ om.remove(); msg.value = text; alert("send failed: "+e.message); }
       finally { sendBtn.disabled = false; }
     }
@@ -581,9 +597,9 @@
       }
       const bar = document.createElement("div"); bar.className = "permbtns";
       const cc = document.createElement("button"); cc.className = "key warn"; cc.textContent = "⛔ Ctrl-C";
-      cc.addEventListener("click", () => { key("C-c"); showRun = false; drawRunPanel(); });
+      cc.addEventListener("click", () => { key("C-c"); showRun = false; drawRunPanel(); toast("Ctrl-C sent"); });
       const esc = document.createElement("button"); esc.className = "key"; esc.textContent = "⎋ Esc";
-      esc.addEventListener("click", () => { key("Escape"); showRun = false; drawRunPanel(); });
+      esc.addEventListener("click", () => { key("Escape"); showRun = false; drawRunPanel(); toast("Esc sent"); });
       bar.appendChild(cc); bar.appendChild(esc); card.appendChild(bar);
       return card;
     }
@@ -659,11 +675,11 @@
         keys.appendChild(card);
       }
       const bar = document.createElement("div"); bar.className = "permbtns";
-      const mkBtn = (label, cls, k) => { const el=document.createElement("button"); el.className="key"+(cls?" "+cls:""); el.textContent=label; el.addEventListener("click", ()=>key(k)); return el; };
-      bar.appendChild(mkBtn("✓ Approve", "go", "Enter"));
+      const mkBtn = (label, cls, k, note) => { const el=document.createElement("button"); el.className="key"+(cls?" "+cls:""); el.textContent=label; el.addEventListener("click", ()=>{ key(k); if(note) toast(note); }); return el; };
+      bar.appendChild(mkBtn("✓ Approve", "go", "Enter", "Approved ✓"));
       bar.appendChild(mkBtn("↓", null, "Down"));
       bar.appendChild(mkBtn("↑", null, "Up"));
-      bar.appendChild(mkBtn("✕ Deny", "warn", "Escape"));
+      bar.appendChild(mkBtn("✕ Deny", "warn", "Escape", "Denied"));
       keys.appendChild(bar);
     }
   }
