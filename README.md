@@ -101,6 +101,14 @@ fallback, but is not required.)
       `~/.claude/sessions/<pid>.json`; no config; falls back to terminal text
 - [ ] Approve/deny buttons refined from `herdr agent explain`'s matched blocker
 - [ ] Detached lifecycle (`--detach` / `--stop`) + push updates
+- [ ] **Multi-session view** — one herdview instance currently mirrors a single
+      herdr session (the socket in `HERDR_SOCKET_PATH`; each session is its own
+      server/socket per `herdr session list`). To show every session in one grid:
+      enumerate `herdr session list`, query each session's socket
+      (`herdr --session <name> …` or a per-call `HERDR_SOCKET_PATH`), merge the
+      agents, and add a **session grouping tier** above the existing branch
+      grouping. Until then, run one instance per session on distinct
+      `HERDVIEW_ADDR` ports (default 8848 collides).
 
 ## License
 
