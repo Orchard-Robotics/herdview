@@ -3,27 +3,28 @@
 A phone-first web mirror of your [herdr](https://herdr.dev) session.
 
 herdview reflects the agents already running in your herdr session into a
-mobile-friendly web UI — see each agent's state (working / blocked / idle),
-and (coming) read its transcript and send input back. It **never spawns a new
-agent**: it reads and steers the sessions you already have, so you're not
-creating throwaway "remote-control" sessions just to check in from your phone.
+mobile-friendly web UI — see each agent's state, read its transcript as a chat,
+send input, approve prompts, and Ctrl-C a runaway tool. It **never spawns a new
+agent on its own**: it reads and steers the sessions you already have, so you're
+not creating throwaway "remote-control" sessions just to check in from your phone.
 
 It's a herdr **plugin**: a small Go binary that drives the herdr CLI / socket
 (the documented plugin API) and serves an embedded web UI. No Node, no Python,
 no runtime for users to install.
 
-## Install (herdr marketplace)
+## Install
+
+herdview ships its prebuilt binaries in the repo (`bin/`), so installing needs
+no download or auth — even from a private repo:
 
 ```sh
-herdr plugin install orchard-robotics/herdview
-```
-
-Then start it and open the URL on your phone (via your terminal app's
-web-preview, or over your tailnet):
-
-```sh
+herdr plugin install <your-org>/herdview     # needs git read access to the repo
 herdr plugin action invoke orchard.herdview.start
 ```
+
+The `[[build]]` step (`scripts/fetch.sh`) just copies the committed binary for
+your OS/arch to `./herdview`. Maintainers rebuild them with `scripts/build.sh`
+(requires Go) and commit the result.
 
 ## What you see
 

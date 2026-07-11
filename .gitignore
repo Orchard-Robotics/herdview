@@ -1,3 +1,3 @@
-# built binary (produced by `go build` locally, or fetch.sh on install)
+# runtime copy placed by scripts/fetch.sh at install time.
+# the committed cross-platform binaries live in bin/ and ARE tracked.
 /herdview
-herdview_*_*

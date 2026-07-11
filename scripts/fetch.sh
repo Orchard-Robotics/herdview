@@ -1,12 +1,10 @@
 #!/bin/sh
-# Build step for `herdr plugin install`: download the prebuilt herdview binary for
-# this OS/arch from GitHub Releases. End users need no Go toolchain.
+# Build step for `herdr plugin install`: select the prebuilt binary committed to
+# this repo for the current OS/arch and place it at ./herdview.
 #
-# Overridable: HERDVIEW_REPO (owner/repo), HERDVIEW_VERSION (tag, default latest).
+# No download and no auth — works cleanly from a private repo (herdr has already
+# cloned the checkout, binaries included).
 set -eu
-
-REPO="${HERDVIEW_REPO:-orchard-robotics/herdview}"
-VERSION="${HERDVIEW_VERSION:-latest}"
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$os" in
@@ -22,14 +20,15 @@ case "$arch" in
   *) echo "herdview: unsupported arch '$arch'" >&2; exit 1 ;;
 esac
 
-asset="herdview_${os}_${arch}"
-if [ "$VERSION" = "latest" ]; then
-  url="https://github.com/${REPO}/releases/latest/download/${asset}"
-else
-  url="https://github.com/${REPO}/releases/download/${VERSION}/${asset}"
+src="bin/herdview_${os}_${arch}"
+if [ ! -f "$src" ]; then
+  echo "herdview: no prebuilt binary at $src (rebuild with scripts/build.sh)" >&2
+  exit 1
 fi
-
-echo "herdview: fetching ${asset} (${VERSION}) ..."
-curl -fsSL "$url" -o herdview
-chmod +x herdview
-echo "herdview: installed ./herdview"
+# write to a temp file then rename, so a reinstall while the server is running
+# doesn't fail with "text file busy" (rename replaces the in-use inode cleanly).
+tmp="herdview.tmp.$$"
+cp "$src" "$tmp"
+chmod +x "$tmp"
+mv -f "$tmp" herdview
+echo "herdview: installed ./herdview (from $src)"
