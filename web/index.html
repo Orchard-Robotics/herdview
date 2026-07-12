@@ -228,7 +228,7 @@
   const shortPath = p => { if(!p) return ""; const a=p.split("/").filter(Boolean); return a.length<=2?p:"…/"+a.slice(-2).join("/"); };
   const esc = s => (s||"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
   // w3:p1 → "workspace 3 · pane 1" (raw id kept as tooltip)
-  const prettyPane = id => { const m = /^w(\d+):p(\d+)$/.exec(id || ""); return m ? `workspace ${m[1]} · pane ${m[2]}` : (id || ""); };
+  const prettyPane = id => { const m = /^w([0-9A-Za-z]+):p([0-9A-Za-z]+)$/.exec(id || ""); return m ? `workspace ${m[1]} · pane ${m[2]}` : (id || ""); };
   // brief confirmation pill so taps feel acknowledged before the next poll
   function toast(msg){
     let t = document.getElementById("hv-toast");

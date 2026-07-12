@@ -30,7 +30,8 @@ import (
 
 // paneRe guards the pane id before it reaches an exec argv (defense in depth;
 // args aren't shell-interpreted, but we still reject anything unexpected).
-var paneRe = regexp.MustCompile(`^w\d+:p\d+$`)
+// herdr workspace/pane ids are alphanumeric (e.g. w1:p2, wE:p3), not just digits.
+var paneRe = regexp.MustCompile(`^w[0-9A-Za-z]+:p[0-9A-Za-z]+$`)
 
 // allowHosts is the set of hostnames requests may carry (populated in main).
 var allowHosts = map[string]bool{}
