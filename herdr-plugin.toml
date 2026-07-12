@@ -36,8 +36,14 @@ command = ["./herdview", "--stop"]
 
 # Alternative to the detached action: run the server visibly in a tucked-away
 # pane whose lifetime is the server's. Open via `herdr plugin pane open`.
+#
+# NOTE: herdr does not run commands through a shell and resolves a bare relative
+# argv[0] (e.g. "./herdview") against $HOME, not the plugin root — so we front
+# with `sh` and exec the binary via the injected $HERDR_PLUGIN_ROOT, which a
+# real shell expands. This is why every example plugin fronts its command with a
+# PATH-resolved interpreter rather than a bare "./binary".
 [[panes]]
 id = "server"
 title = "herdview server"
 placement = "zoomed"
-command = ["./herdview"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/herdview\""]
