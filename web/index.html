@@ -323,6 +323,14 @@
 
   async function api(path, opts){ const r = await fetch(path,{cache:"no-store",...opts}); if(!r.ok) throw new Error("HTTP "+r.status); return r; }
 
+  // Per-pane compose drafts, persisted so a failed send (or a webview reload /
+  // Moshi reconnect) never loses what you typed. localStorage may be unavailable
+  // in some webviews, so every access is guarded.
+  const draftKey = p => "herdview:draft:" + p;
+  function saveDraft(p, v){ try{ v ? localStorage.setItem(draftKey(p), v) : localStorage.removeItem(draftKey(p)); }catch{} }
+  function loadDraft(p){ try{ return localStorage.getItem(draftKey(p)) || ""; }catch{ return ""; } }
+  function clearDraft(p){ try{ localStorage.removeItem(draftKey(p)); }catch{} }
+
   // Demo mode: when served without a backend (as an artifact), render baked-in
   // sample data so the UI is testable from a link. Never true on the local http
   // server (localhost/tailnet are plain http, not a claude.ai host).
@@ -498,16 +506,27 @@
     const msgsEl = document.getElementById("msgs");       // messages only (rebuilt on change)
     const msg = document.getElementById("msg");
     const sendBtn = document.getElementById("sendbtn");
+    const fitMsg = () => { msg.style.height = "auto"; msg.style.height = Math.min(msg.scrollHeight, 128) + "px"; };
+    // Restore any unsent/failed draft for this pane (survives reload / reconnect).
+    { const d = loadDraft(view.pane); if(d){ msg.value = d; fitMsg(); } }
 
     async function send(){
       const text = msg.value.trim(); if(!text) return;
       sendBtn.disabled = true;
+      saveDraft(view.pane, text);          // persist before the round-trip, in case it fails
       msg.value = ""; msg.style.height = "auto";
       // optimistic: show my message instantly (dimmed) so there's no wait for the round-trip
       const om = mkBubble({role:"user", text}); om.classList.add("pending"); msgsEl.appendChild(om); stick();
-      try { await sendMsg(view.pane, text); toast("Sent"); setTimeout(refresh, 300); }
-      catch(e){ om.remove(); msg.value = text; alert("send failed: "+e.message); }
-      finally { sendBtn.disabled = false; }
+      try {
+        await sendMsg(view.pane, text);
+        clearDraft(view.pane);             // actually delivered — drop the cached draft
+        toast("Sent"); setTimeout(refresh, 300);
+      } catch(e){
+        om.remove();
+        msg.value = text; fitMsg();        // put your text back in the box…
+        saveDraft(view.pane, text);        // …and keep it cached so a reload won't lose it
+        toast("Send failed — message kept");
+      } finally { sendBtn.disabled = false; }
     }
     async function key(...keys){
       try { await sendKeys(view.pane, keys); setTimeout(refresh, 250); }
@@ -515,7 +534,7 @@
     }
     sendBtn.onclick = send;
     // Enter inserts a newline (normal chat-app behavior); sending is the button only.
-    msg.addEventListener("input", () => { msg.style.height="auto"; msg.style.height=Math.min(msg.scrollHeight,128)+"px"; });
+    msg.addEventListener("input", () => { fitMsg(); saveDraft(view.pane, msg.value); });
 
     // stay pinned to the bottom unless the user scrolls up to read history
     let pinned = true, lastSig = null, lastText = null, workingSince = null, showRun = false, actMode = null, lastAct = null;
