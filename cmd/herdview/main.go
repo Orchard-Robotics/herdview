@@ -415,6 +415,71 @@ func parseProgress(read string) (index, total int) {
 	return 0, 0
 }
 
+// task is one item in Claude's todo list (rendered in the terminal as a
+// "N tasks (X done, Y open)" block with ✔/◻ markers).
+type task struct {
+	Text   string `json:"text"`
+	Status string `json:"status"` // "done" | "open" | "active"
+}
+
+var taskHeadRe = regexp.MustCompile(`\b\d+ tasks? \(\d+ done`)
+var taskItemRe = regexp.MustCompile(`^\s*([✔✓☑◻☐◐▶●])\s+(.*\S)\s*$`)
+
+// parseTasks extracts Claude's todo checklist from a pane's terminal text.
+func parseTasks(read string) (items []task, ok bool) {
+	lines := strings.Split(read, "\n")
+	start := -1
+	for i, ln := range lines {
+		if taskHeadRe.MatchString(ln) {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return nil, false
+	}
+	for _, ln := range lines[start+1:] {
+		m := taskItemRe.FindStringSubmatch(ln)
+		if m == nil {
+			break // first non-item line ends the block
+		}
+		st := "open"
+		switch m[1] {
+		case "✔", "✓", "☑":
+			st = "done"
+		case "◐", "▶", "●":
+			st = "active"
+		}
+		items = append(items, task{Text: strings.TrimSpace(m[2]), Status: st})
+	}
+	return items, len(items) > 0
+}
+
+// handleTasks returns the pane's current todo checklist for a tidy UI render.
+func handleTasks(w http.ResponseWriter, r *http.Request) {
+	socket, pane, ok := resolveTarget(w, r)
+	if !ok {
+		return
+	}
+	out, err := runHerdrOn(socket, "pane", "read", pane, "--source", "visible", "--lines", "80", "--format", "text")
+	if err != nil {
+		http.Error(w, "herdr pane read failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	items, found := parseTasks(string(out))
+	if !found {
+		items = []task{}
+	}
+	done := 0
+	for _, t := range items {
+		if t.Status == "done" {
+			done++
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"tasks": items, "done": done, "total": len(items)})
+}
+
 // ---- pane → transcript mapping (populated by the `herdview hook` Claude hook) ----
 
 func stateDir() string {
@@ -918,6 +983,7 @@ func main() {
 	mux.HandleFunc("/api/pane/send", handleSend)
 	mux.HandleFunc("/api/pane/key", handleKey)
 	mux.HandleFunc("/api/pane/choices", handleChoices)
+	mux.HandleFunc("/api/pane/tasks", handleTasks)
 	mux.HandleFunc("/api/pane/rename", handleRename)
 	mux.HandleFunc("/api/worktree", handleNewWorktree)
 	mux.HandleFunc("/api/agent", handleNewAgent)

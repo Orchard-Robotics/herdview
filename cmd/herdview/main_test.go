@@ -137,6 +137,39 @@ func TestParseChoices(t *testing.T) {
 	}
 }
 
+func TestParseTasks(t *testing.T) {
+	read := "some earlier output\n" +
+		"5 tasks (3 done, 2 open)\n" +
+		"  ✔ Add --use-rigid-camera-map-depth feature flag\n" +
+		"  ✔ Wire RigidCameraMapStage into pipeline\n" +
+		"  ✔ Phase 1a: reproject depth\n" +
+		"  ◻ Verify Phase 1a on LFC apple scan\n" +
+		"  ◻ Phase 1b: per-frame Tiny RoMa refinement\n" +
+		"\n$ \n"
+	items, ok := parseTasks(read)
+	if !ok || len(items) != 5 {
+		t.Fatalf("got %d items, ok=%v", len(items), ok)
+	}
+	if items[0].Status != "done" || items[0].Text != "Add --use-rigid-camera-map-depth feature flag" {
+		t.Errorf("item0 = %+v", items[0])
+	}
+	if items[3].Status != "open" || items[3].Text != "Verify Phase 1a on LFC apple scan" {
+		t.Errorf("item3 = %+v", items[3])
+	}
+	done := 0
+	for _, x := range items {
+		if x.Status == "done" {
+			done++
+		}
+	}
+	if done != 3 {
+		t.Errorf("done=%d, want 3", done)
+	}
+	if _, ok := parseTasks("just terminal output\n$ ls\nfile1 file2\n"); ok {
+		t.Error("plain output should not parse as a task list")
+	}
+}
+
 func TestParseProgress(t *testing.T) {
 	// multi-part tab bar: Fruit answered (☒), Color pending (☐) → question 2 of 2
 	multi := "❯ q\n←  ☒ Fruit  ☐ Color  ✔ Submit  →\nEnter to select · ↑/↓ to navigate · Esc to cancel\n"
