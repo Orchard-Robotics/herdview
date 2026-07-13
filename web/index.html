@@ -442,6 +442,7 @@
   function agentCard(a, showBranch){
     const s = a.agent_status||"unknown";
     const el = document.createElement("div"); el.className = "card "+s;
+    el.dataset.pane = a.pane_id;   // stable hook for automated tests
     el.innerHTML = `
       <div class="row">
         <span class="name">${esc(a.name || a.agent) || "agent"} <span class="chev">›</span></span>
@@ -515,17 +516,16 @@
       sendBtn.disabled = true;
       saveDraft(view.pane, text);          // persist before the round-trip, in case it fails
       msg.value = ""; msg.style.height = "auto";
-      // Track as "pending sent" so it stays visible across transcript refreshes:
-      // the JSONL file lags the live session, so a plain optimistic bubble would
-      // be wiped by renderConvo before the message ever lands on disk.
-      pendingSent.push(text);
+      // Log the send so it stays visible across refreshes (the transcript/terminal
+      // lags the live session); render decides idempotently when it's confirmed.
+      sentLog.push(text);
       const om = mkBubble({role:"user", text}); om.classList.add("pending"); msgsEl.appendChild(om); stick();
       try {
         await sendMsg(view.pane, text);
         clearDraft(view.pane);             // actually delivered — drop the cached draft
         toast("Sent"); setTimeout(refresh, 300);
       } catch(e){
-        pendingSent = pendingSent.filter(t => t !== text);   // didn't send — drop it
+        const _i = sentLog.lastIndexOf(text); if(_i>=0) sentLog.splice(_i,1);   // didn't send — drop it
         om.remove();
         msg.value = text; fitMsg();        // put your text back in the box…
         saveDraft(view.pane, text);        // …and keep it cached so a reload won't lose it
@@ -542,7 +542,7 @@
 
     // stay pinned to the bottom unless the user scrolls up to read history
     let pinned = true, lastSig = null, lastText = null, workingSince = null, showRun = false, actMode = null, lastAct = null;
-    let pendingSent = [];   // messages sent but not yet reflected in the transcript file (it lags the live session)
+    let sentLog = [];   // ordered texts sent but not yet confirmed in the transcript/terminal (pending shown idempotently)
     convo.addEventListener("scroll", () => {
       pinned = convo.scrollHeight - convo.scrollTop - convo.clientHeight < 80;
     });
@@ -670,17 +670,20 @@
 
     function renderConvo(msgs, status){
       const real = (msgs||[]).filter(m => (m.text&&m.text.trim()) || (m.tools&&m.tools.length));
-      // Drop any queued sends that have now landed in the transcript so they don't
-      // render twice; whatever hasn't landed yet stays as a dimmed pending bubble.
-      if(pendingSent.length){
-        pendingSent = pendingSent.filter(pt => !real.some(m => m.role==="user" && (m.text||"").trim() === pt));
-      }
+      // Sent messages not yet reflected in the transcript stay as pending bubbles.
+      // Computed idempotently: for each text, show only the sends beyond the count
+      // already confirmed in the transcript — so identical duplicates each get a
+      // bubble and repeated refreshes never over-consume.
+      const realCount = {};
+      for(const m of real){ if(m.role==="user"){ const k=(m.text||"").trim(); realCount[k]=(realCount[k]||0)+1; } }
+      const seen = {}, pend = [];
+      for(const t of sentLog){ seen[t]=(seen[t]||0)+1; if(seen[t] > (realCount[t]||0)) pend.push(t); }
       const sig = real.map(m => m.role[0]+":"+((m.text||"").length)+":"+((m.tools||[]).map(t=>t.name).join(","))).join("|")
-                + "##" + pendingSent.join("|");
+                + "##" + pend.join("|");
       if(sig !== lastSig){                       // rebuild only the messages when the conversation changed
         lastSig = sig; lastText = null;
         msgsEl.innerHTML = "";
-        if(!real.length && !pendingSent.length){ msgsEl.appendChild(mkSys("no messages yet")); }
+        if(!real.length && !pend.length){ msgsEl.appendChild(mkSys("no messages yet")); }
         let prev = null;
         for(const m of real){
           if(m.role==="assistant" && !(m.text&&m.text.trim()) && m.tools && m.tools.length){
@@ -692,7 +695,7 @@
           }
           prev = m.role;
         }
-        for(const pt of pendingSent){            // sent, but the transcript file hasn't caught up yet
+        for(const pt of pend){                   // sent, but the transcript hasn't caught up yet
           const node = mkBubble({role:"user", text:pt}); node.classList.add("pending");
           if(prev==="user") node.classList.add("grouped");
           msgsEl.appendChild(node);
@@ -702,11 +705,20 @@
       stick();
     }
     function renderText(txt, status){
-      if(txt !== lastText){
-        lastText = txt; lastSig = null;
+      txt = txt || "";
+      // No structured transcript here to reconcile against, so a sent message
+      // clears once its text shows up in the terminal output.
+      const pend = sentLog.filter(t => !txt.includes(t));
+      const sig = txt + "|" + pend.join("|");
+      if(sig !== lastText){
+        lastText = sig; lastSig = null;
         msgsEl.innerHTML = "";
         const pre = document.createElement("pre"); pre.className = "term"; linkify(pre, txt);
         msgsEl.appendChild(pre);
+        for(const pt of pend){   // sent messages stay visible on the read fallback too
+          const node = mkBubble({role:"user", text:pt}); node.classList.add("pending");
+          msgsEl.appendChild(node);
+        }
       }
       stick();
     }
