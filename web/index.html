@@ -609,11 +609,21 @@
 
     // When blocked, poll for a parsed multiple-choice picker so we can render
     // tappable answers instead of raw terminal + generic approve/deny keys.
+    // On any change to the picker (a new question in a multi-part ask, or it
+    // disappearing) reset the optimistic selection so the next part is answerable.
+    const pickerSig = useRef("");
     useEffect(() => {
-      if(status !== "blocked"){ setChoices({ question:"", options:[] }); setChosen(null); return; }
+      if(status !== "blocked"){ setChoices({ question:"", options:[] }); setChosen(null); pickerSig.current = ""; return; }
       let alive = true;
       async function tick(){
-        try{ const r = await fetch("/api/pane/choices?"+pq(pane, session), {cache:"no-store"}); if(alive && r.ok){ const c = await r.json(); setChoices(c); if(!c.options || !c.options.length) setChosen(null); } }catch{}
+        try{
+          const r = await fetch("/api/pane/choices?"+pq(pane, session), {cache:"no-store"});
+          if(!alive || !r.ok) return;
+          const c = await r.json();
+          const sig = (c.question||"") + "|" + (c.options||[]).map(o => o.n+":"+o.label).join(",");
+          if(sig !== pickerSig.current){ pickerSig.current = sig; setChosen(null); }
+          setChoices(c);
+        }catch{}
       }
       tick();
       const id = setInterval(tick, 1500);
