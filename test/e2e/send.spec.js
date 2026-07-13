@@ -32,6 +32,20 @@ test("failed send keeps the text in the box and caches a draft", async ({ page }
   expect(draft).toBe("boom message");
 });
 
+test("a pending send survives a browser refresh (delivered-but-unconfirmed isn't lost)", async ({ page }) => {
+  await page.goto("/");
+  await page.locator('[data-pane="w3:p1"]').click();
+  await page.locator("#msg").fill("queued while working");
+  await page.locator("#sendbtn").click();
+  await expect(page.locator(".msg.user.pending .bubble", { hasText: "queued while working" }).first()).toBeVisible();
+  await expect.poll(() => env.readSendlog()).toContain("queued while working"); // send has completed (reached herdr)
+  // reload — the transcript still doesn't contain it (Claude queued it), so a
+  // purely in-memory pending would vanish here; the persisted one must not.
+  await page.reload();
+  await page.locator('[data-pane="w3:p1"]').click();
+  await expect(page.locator(".msg.user.pending .bubble", { hasText: "queued while working" }).first()).toBeVisible();
+});
+
 test("a cached draft is restored when the pane is reopened", async ({ page }) => {
   await page.goto("/");
   // seed a draft directly (as if a prior failed send left it)

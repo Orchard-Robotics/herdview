@@ -224,6 +224,9 @@
   let view = { name:"grid", pane:null, agent:null };
   let timer = null;
   let lastAgents = [];
+  let lastGridSig = null;   // skip grid rebuilds (and scroll resets) when unchanged
+  let lastSessionsSig = null;
+  let gated = false;        // true when 2+ sessions → the session gate is in play
 
   const shortPath = p => { if(!p) return ""; const a=p.split("/").filter(Boolean); return a.length<=2?p:"…/"+a.slice(-2).join("/"); };
   const esc = s => (s||"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
@@ -331,6 +334,21 @@
   function loadDraft(p){ try{ return localStorage.getItem(draftKey(p)) || ""; }catch{ return ""; } }
   function clearDraft(p){ try{ localStorage.removeItem(draftKey(p)); }catch{} }
 
+  // Sent-but-unconfirmed messages persisted per session+pane, so a browser
+  // refresh doesn't lose a pending send (e.g. one Claude has queued and not yet
+  // written to the transcript). Capped so it can't grow without bound.
+  const sentKey = (session, pane) => "herdview:sent:" + (session||"") + ":" + pane;
+  const SENT_TTL = 5*60*1000;   // a pending send auto-clears after this, so a pane without a transcript can't accumulate grey bubbles forever
+  function loadSent(session, pane){
+    try{
+      const now = Date.now();
+      return (JSON.parse(localStorage.getItem(sentKey(session,pane)) || "[]"))
+        .map(e => typeof e === "string" ? {t:e, ts:now} : e)      // migrate old string entries
+        .filter(e => e && e.t && (now - (e.ts||0) < SENT_TTL));
+    }catch{ return []; }
+  }
+  function saveSent(session, pane, arr){ try{ const a=arr.slice(-40); a.length ? localStorage.setItem(sentKey(session,pane), JSON.stringify(a)) : localStorage.removeItem(sentKey(session,pane)); }catch{} }
+
   // Demo mode: when served without a backend (as an artifact), render baked-in
   // sample data so the UI is testable from a link. Never true on the local http
   // server (localhost/tailnet are plain http, not a claude.ai host).
@@ -361,36 +379,38 @@
     if(DEMO) return DEMO_DATA.agents;
     return await (await api("/api/agents")).json();
   }
-  async function fetchTranscript(pane){
+  // pane ids collide across sessions, so every pane op is qualified by session.
+  const pq = (pane, session) => "pane="+encodeURIComponent(pane)+(session?"&session="+encodeURIComponent(session):"");
+  async function fetchTranscript(pane, session){
     if(DEMO) return DEMO_DATA.transcripts[pane] || null;
-    const r = await fetch("/api/pane/transcript?pane="+encodeURIComponent(pane),{cache:"no-store"});
+    const r = await fetch("/api/pane/transcript?"+pq(pane,session),{cache:"no-store"});
     return r.ok ? await r.json() : null;
   }
-  async function fetchRead(pane){
+  async function fetchRead(pane, session){
     if(DEMO) return DEMO_DATA.reads[pane] || "(no output)";
-    return await (await api("/api/pane/read?pane="+encodeURIComponent(pane))).text();
+    return await (await api("/api/pane/read?"+pq(pane,session))).text();
   }
-  async function sendMsg(pane, text){
+  async function sendMsg(pane, session, text){
     if(DEMO) return;
-    await api("/api/pane/send?pane="+encodeURIComponent(pane), {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
+    await api("/api/pane/send?"+pq(pane,session), {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});
   }
-  async function sendKeys(pane, keys){
+  async function sendKeys(pane, session, keys){
     if(DEMO) return;
-    await api("/api/pane/key?pane="+encodeURIComponent(pane), {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({keys})});
+    await api("/api/pane/key?"+pq(pane,session), {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({keys})});
   }
-  async function sendRename(pane, name){
+  async function sendRename(pane, session, name){
     if(DEMO){ const a=DEMO_DATA.agents.find(x=>x.pane_id===pane); if(a){ if(name) a.name=name; else delete a.name; } return; }
-    await api("/api/pane/rename?pane="+encodeURIComponent(pane), {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
+    await api("/api/pane/rename?"+pq(pane,session), {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
   }
   async function renameAgent(a){
     const name = prompt("Rename agent (leave blank to reset):", a.name || "");
     if(name === null) return;
-    try { await sendRename(a.pane_id, name.trim()); await renderGrid(); }
+    try { await sendRename(a.pane_id, a.session, name.trim()); await renderGrid(); }
     catch(e){ alert("rename failed: "+e.message); }
   }
-  async function sendNewWorktree(cwd, name){
+  async function sendNewWorktree(cwd, name, session){
     if(DEMO){ DEMO_DATA.agents.unshift({pane_id:"w9:p1",workspace_id:"w9",agent:"claude",agent_status:"working",cwd,branch:name,focused:false}); return; }
-    await api("/api/worktree", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cwd,name})});
+    await api("/api/worktree", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cwd,name,session})});
   }
   async function newWorktree(){
     const base = lastAgents.find(a=>a.focused) || lastAgents[0];
@@ -398,19 +418,19 @@
     const name = prompt(`New worktree — branch name\n(repo: ${shortPath(base.cwd)}, launches a Claude agent)`, "");
     if(name === null) return;
     const n = name.trim(); if(!n) return;
-    try { await sendNewWorktree(base.cwd, n); setTimeout(renderGrid, 600); }
+    try { await sendNewWorktree(base.cwd, n, base.session); setTimeout(renderGrid, 600); }
     catch(e){ alert("worktree create failed: "+e.message); }
   }
-  async function sendNewAgent(cwd){
+  async function sendNewAgent(cwd, session){
     if(DEMO){ DEMO_DATA.agents.unshift({pane_id:"w9:p2",workspace_id:"w9",agent:"claude",agent_status:"working",cwd,branch:(lastAgents[0]||{}).branch,focused:false}); return; }
-    await api("/api/agent", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cwd})});
+    await api("/api/agent", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cwd,session})});
   }
   async function newAgent(){
     const base = lastAgents.find(a=>a.focused) || lastAgents[0];
     const dir = prompt("New agent — working directory (opens a new tab, no branch):", base ? base.cwd : "");
     if(dir === null) return;
     const d = dir.trim(); if(!d) return;
-    try { await sendNewAgent(d); setTimeout(renderGrid, 600); }
+    try { await sendNewAgent(d, base ? base.session : ""); setTimeout(renderGrid, 600); }
     catch(e){ alert("agent start failed: "+e.message); }
   }
   // ＋ opens a small sheet: new agent (new tab) or new worktree (new branch).
@@ -442,7 +462,8 @@
   function agentCard(a, showBranch){
     const s = a.agent_status||"unknown";
     const el = document.createElement("div"); el.className = "card "+s;
-    el.dataset.pane = a.pane_id;   // stable hook for automated tests
+    el.dataset.pane = a.pane_id;   // stable hooks for automated tests
+    el.dataset.session = a.session || "";
     el.innerHTML = `
       <div class="row">
         <span class="name">${esc(a.name || a.agent) || "agent"} <span class="chev">›</span></span>
@@ -458,23 +479,72 @@
     el.querySelector(".rename").addEventListener("click", e => { e.stopPropagation(); renameAgent(a); });
     return el;
   }
+  // ---- sessions gate (shown only when 2+ sessions exist) ----
+  function sessionCard(name, info){
+    const s = info.blocked ? "blocked" : (info.working ? "working" : "idle");
+    const el = document.createElement("div"); el.className = "card " + s;
+    el.dataset.sessionName = name;
+    el.innerHTML = `
+      <div class="row">
+        <span class="name">▸ ${esc(name || "session")} <span class="chev">›</span></span>
+        <span class="pill ${s}"><span class="dot"></span>${info.n} agent${info.n===1?"":"s"}</span>
+      </div>
+      ${info.blocked?`<div class="path">${info.blocked} need you</div>`:""}`;
+    el.onclick = () => enterGrid(name);
+    return el;
+  }
+  async function renderSessions(){
+    view = { name:"sessions", pane:null, agent:null, session:null };
+    back.hidden = true; foot.hidden = true; newwt.hidden = true;
+    title.innerHTML = '<span class="g">❯</span> herd<span class="g">view</span>';
+    let agents;
+    try { agents = await fetchAgents(); }
+    catch(e){ app.innerHTML = `<div class="error">can't reach herdr: ${e.message}</div>`; lastSessionsSig=null; return; }
+    lastAgents = agents;
+    const map = {}, order = [];
+    for(const a of agents){ const k = a.session || ""; if(!map[k]){ map[k]={n:0,blocked:0,working:0}; order.push(k); } map[k].n++; if(a.agent_status==="blocked") map[k].blocked++; else if(a.agent_status==="working") map[k].working++; }
+    const keys = order.sort((x,y)=>(map[x].blocked?0:1)-(map[y].blocked?0:1) || x.localeCompare(y));
+    gated = keys.length > 1;
+    if(!gated){ enterGrid(keys[0] || ""); return; }   // single session → skip the gate
+    const totalBlocked = keys.reduce((s,k)=>s+map[k].blocked,0);
+    count.textContent = `${keys.length} sessions`+(totalBlocked?` · ${totalBlocked} need you`:"");
+    const sig = keys.map(k=>`${k}:${map[k].n}:${map[k].blocked}:${map[k].working}`).join("|");
+    if(sig === lastSessionsSig) return;
+    lastSessionsSig = sig;
+    const prev = app.querySelector(".scroller"); const savedY = prev ? prev.scrollTop : 0;
+    app.innerHTML="";
+    const scr = document.createElement("div"); scr.className="scroller";
+    for(const k of keys) scr.appendChild(sessionCard(k, map[k]));
+    app.appendChild(scr); scr.scrollTop = savedY;
+  }
+  function enterGrid(session){
+    view = { name:"grid", session, pane:null, agent:null };
+    back.hidden = !gated;                 // back exists only when there's a gate to return to
+    foot.hidden = false; newwt.hidden = false;
+    title.innerHTML = gated ? `<span class="g">❯</span> ${esc(session||"session")}` : '<span class="g">❯</span> herd<span class="g">view</span>';
+    lastGridSig = null;
+    schedule(renderGrid);
+  }
+
+  // ---- agents grid (scoped to the selected session) ----
   async function renderGrid(){
     let agents;
     try { agents = await fetchAgents(); }
-    catch(e){ app.innerHTML = `<div class="error">can't reach herdr: ${e.message}</div>`; return; }
+    catch(e){ app.innerHTML = `<div class="error">can't reach herdr: ${e.message}</div>`; lastGridSig=null; return; }
     lastAgents = agents;
-    agents.sort((a,b)=>(STATE_ORDER[a.agent_status]??3)-(STATE_ORDER[b.agent_status]??3));
-    const blocked = agents.filter(a=>a.agent_status==="blocked").length;
-    count.textContent = `${agents.length} agent${agents.length===1?"":"s"}`+(blocked?` · ${blocked} need you`:"");
-    if(!agents.length){ app.innerHTML='<div class="empty">No agents in this session.</div>'; return; }
-    // group by git branch (worktree awareness)
+    const mine = agents.filter(a => (a.session||"") === (view.session||""));
+    mine.sort((a,b)=>(STATE_ORDER[a.agent_status]??3)-(STATE_ORDER[b.agent_status]??3));
+    const blocked = mine.filter(a=>a.agent_status==="blocked").length;
+    count.textContent = `${mine.length} agent${mine.length===1?"":"s"}`+(blocked?` · ${blocked} need you`:"");
+    // Rebuild only on change so a 2s poll doesn't recreate .scroller and jump to top.
+    const sig = mine.map(a=>[a.pane_id,a.agent_status,a.name||"",a.branch||"",a.focused?1:0].join("~")).join("|");
+    if(sig === lastGridSig) return;
+    lastGridSig = sig;
+    const prev = app.querySelector(".scroller"); const savedY = prev ? prev.scrollTop : 0;
+    if(!mine.length){ app.innerHTML='<div class="empty">No agents in this session.</div>'; return; }
     const groups = {};
-    for(const a of agents){ const k = a.branch || "no branch"; (groups[k] = groups[k] || []).push(a); }
-    const keys = Object.keys(groups).sort((x,y)=>{
-      const bx = groups[x].some(a=>a.agent_status==="blocked") ? 0 : 1;
-      const by = groups[y].some(a=>a.agent_status==="blocked") ? 0 : 1;
-      return bx-by || x.localeCompare(y);
-    });
+    for(const a of mine){ const k = a.branch || "no branch"; (groups[k] = groups[k] || []).push(a); }
+    const keys = Object.keys(groups).sort((x,y)=>(groups[x].some(a=>a.agent_status==="blocked")?0:1)-(groups[y].some(a=>a.agent_status==="blocked")?0:1) || x.localeCompare(y));
     const grouped = keys.length > 1;
     app.innerHTML="";
     const scr = document.createElement("div"); scr.className = "scroller";
@@ -482,12 +552,12 @@
       if(grouped){ const h=document.createElement("div"); h.className="group"; h.textContent=`⎇ ${k} · ${groups[k].length}`; scr.appendChild(h); }
       for(const a of groups[k]) scr.appendChild(agentCard(a, !grouped));
     }
-    app.appendChild(scr);
+    app.appendChild(scr); scr.scrollTop = savedY;
   }
 
   // ---- detail ----
   function openDetail(a){
-    view = { name:"detail", pane:a.pane_id, agent:a };
+    view = { name:"detail", pane:a.pane_id, session:a.session, agent:a };
     back.hidden = false; foot.hidden = true; newwt.hidden = true;
     title.innerHTML = `${esc(a.name || a.agent)} <span class="g">·</span> <span style="font-family:var(--mono);font-size:.78rem;color:var(--muted)" title="${esc(a.pane_id)}">${esc(prettyPane(a.pane_id))}</span>`;
     app.innerHTML = `
@@ -518,14 +588,14 @@
       msg.value = ""; msg.style.height = "auto";
       // Log the send so it stays visible across refreshes (the transcript/terminal
       // lags the live session); render decides idempotently when it's confirmed.
-      sentLog.push(text);
+      sentLog.push({t:text, ts:Date.now()}); saveSent(view.session, view.pane, sentLog);   // survives a refresh; TTL-bounded
       const om = mkBubble({role:"user", text}); om.classList.add("pending"); msgsEl.appendChild(om); stick();
       try {
-        await sendMsg(view.pane, text);
+        await sendMsg(view.pane, view.session, text);
         clearDraft(view.pane);             // actually delivered — drop the cached draft
         toast("Sent"); setTimeout(refresh, 300);
       } catch(e){
-        const _i = sentLog.lastIndexOf(text); if(_i>=0) sentLog.splice(_i,1);   // didn't send — drop it
+        for(let _i=sentLog.length-1;_i>=0;_i--){ if(sentLog[_i].t===text){ sentLog.splice(_i,1); break; } } saveSent(view.session, view.pane, sentLog);   // didn't send — drop it
         om.remove();
         msg.value = text; fitMsg();        // put your text back in the box…
         saveDraft(view.pane, text);        // …and keep it cached so a reload won't lose it
@@ -533,7 +603,7 @@
       } finally { sendBtn.disabled = false; }
     }
     async function key(...keys){
-      try { await sendKeys(view.pane, keys); setTimeout(refresh, 250); }
+      try { await sendKeys(view.pane, view.session, keys); setTimeout(refresh, 250); }
       catch(e){ alert("key failed: "+e.message); }
     }
     sendBtn.onclick = send;
@@ -542,7 +612,7 @@
 
     // stay pinned to the bottom unless the user scrolls up to read history
     let pinned = true, lastSig = null, lastText = null, workingSince = null, showRun = false, actMode = null, lastAct = null;
-    let sentLog = [];   // ordered texts sent but not yet confirmed in the transcript/terminal (pending shown idempotently)
+    let sentLog = loadSent(view.session, view.pane);   // restored across refresh so a pending send isn't lost
     convo.addEventListener("scroll", () => {
       pinned = convo.scrollHeight - convo.scrollTop - convo.clientHeight < 80;
     });
@@ -551,15 +621,15 @@
     schedule(refresh);
     async function refresh(){
       let agents=[]; try{ agents = await fetchAgents(); }catch{}
-      const cur = agents.find(x=>x.pane_id===view.pane) || view.agent;
+      const cur = agents.find(x=>x.pane_id===view.pane && (x.session||"")===(view.session||"")) || view.agent;
       const status = cur.agent_status||"unknown";
       if(status==="working"){ if(!workingSince) workingSince=Date.now(); }
       else if(status==="idle"){ workingSince=null; }   // keep the timer through transient blocked/unknown flickers
       let msgs=null, readText=null;
       try {
-        const tr = await fetchTranscript(view.pane);
+        const tr = await fetchTranscript(view.pane, view.session);
         if(tr){ msgs=tr.messages; renderConvo(msgs, status); renderKeys(status, lastPending(msgs)); }
-        else { readText = await fetchRead(view.pane); renderText(readText, status); renderKeys(status, null); }
+        else { readText = await fetchRead(view.pane, view.session); renderText(readText, status); renderKeys(status, null); }
       } catch(e){ renderText("can't read pane: "+e.message, status); renderKeys(status, null); }
       renderActivity(status, activityFor(status, msgs));
     }
@@ -639,7 +709,7 @@
         pend.appendChild(nm);
       }
       try {
-        const txt = await fetchRead(view.pane);
+        const txt = await fetchRead(view.pane, view.session);
         const lines = (txt || "").replace(/\s+$/, "").split("\n").slice(-8).join("\n");
         p.querySelector(".preview").textContent = lines || "(no recent output)";
       } catch {}
@@ -676,8 +746,11 @@
       // bubble and repeated refreshes never over-consume.
       const realCount = {};
       for(const m of real){ if(m.role==="user"){ const k=(m.text||"").trim(); realCount[k]=(realCount[k]||0)+1; } }
+      const now = Date.now();
+      const live = sentLog.filter(e => now - e.ts < SENT_TTL);
+      if(live.length !== sentLog.length){ sentLog = live; saveSent(view.session, view.pane, sentLog); }
       const seen = {}, pend = [];
-      for(const t of sentLog){ seen[t]=(seen[t]||0)+1; if(seen[t] > (realCount[t]||0)) pend.push(t); }
+      for(const e of sentLog){ seen[e.t]=(seen[e.t]||0)+1; if(seen[e.t] > (realCount[e.t]||0)) pend.push(e.t); }
       const sig = real.map(m => m.role[0]+":"+((m.text||"").length)+":"+((m.tools||[]).map(t=>t.name).join(","))).join("|")
                 + "##" + pend.join("|");
       if(sig !== lastSig){                       // rebuild only the messages when the conversation changed
@@ -708,7 +781,10 @@
       txt = txt || "";
       // No structured transcript here to reconcile against, so a sent message
       // clears once its text shows up in the terminal output.
-      const pend = sentLog.filter(t => !txt.includes(t));
+      const now = Date.now();
+      const live = sentLog.filter(e => now - e.ts < SENT_TTL);
+      if(live.length !== sentLog.length){ sentLog = live; saveSent(view.session, view.pane, sentLog); }
+      const pend = sentLog.filter(e => !txt.includes(e.t)).map(e => e.t);
       const sig = txt + "|" + pend.join("|");
       if(sig !== lastText){
         lastText = sig; lastSig = null;
@@ -745,10 +821,12 @@
     }
   }
 
-  back.onclick = () => { view={name:"grid",pane:null,agent:null}; back.hidden=true; foot.hidden=false; newwt.hidden=false;
-    title.innerHTML='<span class="g">❯</span> herd<span class="g">view</span>'; schedule(renderGrid); };
+  back.onclick = () => {
+    if(view.name==="detail"){ enterGrid(view.session); }        // detail → that session's agents
+    else { lastSessionsSig = null; schedule(renderSessions); }  // grid (gated) → sessions gate (force rebuild)
+  };
 
-  schedule(renderGrid);
+  schedule(renderSessions);
 </script>
 </body>
 </html>

@@ -52,9 +52,33 @@ const appendTranscript = (obj) => fs.appendFileSync(TRANSCRIPT, JSON.stringify(o
 
 // Reset all mutable scenario state to defaults (call in beforeEach).
 function resetScenario() {
-  resetState();
+  resetState(); // DEFAULT_STATE has no `sessions` key → mock falls back to a single "default" session
   resetSendlog();
   setTranscript([assistantTurn("hello from the transcript")]);
+}
+
+// Build an agent record for a fixture.
+function mkAgent(pane, status, extra = {}) {
+  const ws = pane.split(":")[0];
+  return {
+    agent: "claude", agent_status: status,
+    cwd: extra.cwd || CWD, foreground_cwd: extra.cwd || CWD,
+    pane_id: pane, tab_id: ws + ":t" + pane.split(":p")[1], workspace_id: ws,
+    focused: !!extra.focused, ...(extra.name ? { name: extra.name } : {}),
+  };
+}
+
+// Replace the single-session state with several sessions (aggregate view).
+// list: [{name, agents, read?, processInfo?, sendShouldFail?}] — sockets synthesized.
+function setSessions(list) {
+  const sessions = list.map((x) => ({
+    name: x.name, socket: "MOCK_" + x.name, running: x.running !== false,
+    agents: x.agents || [], read: x.read || {}, processInfo: x.processInfo || {},
+    sendShouldFail: !!x.sendShouldFail,
+  }));
+  const st = readState();
+  st.sessions = sessions;
+  writeState(st);
 }
 
 module.exports = {
@@ -62,4 +86,5 @@ module.exports = {
   CWD, SESSION_PID, SESSION_ID, TRANSCRIPT, DEFAULT_STATE,
   writeState, readState, patchState, resetState, resetSendlog, readSendlog,
   setTranscript, appendTranscript, userTurn, assistantTurn, resetScenario,
+  mkAgent, setSessions,
 };

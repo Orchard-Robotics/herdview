@@ -48,15 +48,20 @@ func hostOnly(hostport string) string {
 // POSTs (CSRF). It adds no login friction — same-origin/loopback traffic passes.
 func guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !allowHosts[hostOnly(r.Host)] {
-			http.Error(w, "forbidden host", http.StatusForbidden)
-			return
-		}
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			if o := r.Header.Get("Origin"); o != "" {
-				if u, err := url.Parse(o); err != nil || !allowHosts[u.Hostname()] {
-					http.Error(w, "forbidden origin", http.StatusForbidden)
-					return
+		// HERDVIEW_ALLOW_HOSTS="*" opts out of the allowlist entirely — for a
+		// tailnet-gated instance where you accept any Host/Origin and rely on the
+		// network layer for access control. Weakens DNS-rebinding/CSRF defenses.
+		if !allowHosts["*"] {
+			if !allowHosts[hostOnly(r.Host)] {
+				http.Error(w, "forbidden host", http.StatusForbidden)
+				return
+			}
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				if o := r.Header.Get("Origin"); o != "" {
+					if u, err := url.Parse(o); err != nil || !allowHosts[u.Hostname()] {
+						http.Error(w, "forbidden origin", http.StatusForbidden)
+						return
+					}
 				}
 			}
 		}
@@ -73,12 +78,62 @@ func herdrBin() string {
 	return "herdr"
 }
 
-// runHerdr executes a herdr CLI subcommand and returns its stdout. A short
-// timeout keeps a wedged socket from hanging HTTP handlers.
-func runHerdr(args ...string) ([]byte, error) {
+// runHerdr executes a herdr CLI subcommand against the ambient session and
+// returns its stdout.
+func runHerdr(args ...string) ([]byte, error) { return runHerdrOn("", args...) }
+
+// runHerdrOn runs a herdr subcommand against a specific session socket (empty =
+// the ambient HERDR_SOCKET_PATH). This is how the aggregate view fans out across
+// sessions. A short timeout keeps a wedged socket from hanging HTTP handlers.
+func runHerdrOn(socket string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return exec.CommandContext(ctx, herdrBin(), args...).Output()
+	cmd := exec.CommandContext(ctx, herdrBin(), args...)
+	if socket != "" {
+		env := make([]string, 0, len(os.Environ())+1)
+		for _, e := range os.Environ() {
+			if !strings.HasPrefix(e, "HERDR_SOCKET_PATH=") {
+				env = append(env, e)
+			}
+		}
+		cmd.Env = append(env, "HERDR_SOCKET_PATH="+socket)
+	}
+	return cmd.Output()
+}
+
+// herdrSession is one entry from `herdr session list --json`.
+type herdrSession struct {
+	Name    string `json:"name"`
+	Running bool   `json:"running"`
+	Socket  string `json:"socket_path"`
+}
+
+// listSessions enumerates herdr sessions for the aggregate multi-session view.
+func listSessions() []herdrSession {
+	out, err := runHerdr("session", "list", "--json")
+	if err != nil {
+		return nil
+	}
+	var res struct {
+		Sessions []herdrSession `json:"sessions"`
+	}
+	if json.Unmarshal(out, &res) != nil {
+		return nil
+	}
+	return res.Sessions
+}
+
+// sessionSocket resolves a session name to its socket (running sessions only).
+func sessionSocket(name string) (string, bool) {
+	if name == "" {
+		return "", false
+	}
+	for _, s := range listSessions() {
+		if s.Name == name && s.Running {
+			return s.Socket, true
+		}
+	}
+	return "", false
 }
 
 // Agent is the subset of a herdr agent record the UI needs.
@@ -91,6 +146,7 @@ type Agent struct {
 	Status    string `json:"agent_status"`
 	Cwd       string `json:"cwd"`
 	Branch    string `json:"branch,omitempty"` // git branch of the agent's cwd (worktree awareness)
+	Session   string `json:"session,omitempty"` // herdr session the agent lives in (aggregate view)
 	Focused   bool   `json:"focused"`
 }
 
@@ -115,56 +171,82 @@ type agentListResult struct {
 	} `json:"result"`
 }
 
-// handleAgents returns the live agent list. This is the read side of the mirror.
+// handleAgents returns the live agent list across every running herdr session
+// (the aggregate view). Each agent is tagged with its session so the UI can
+// group by it; a failing session is skipped rather than failing the whole grid.
 func handleAgents(w http.ResponseWriter, r *http.Request) {
-	out, err := runHerdr("agent", "list")
-	if err != nil {
-		http.Error(w, "herdr agent list failed: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	var res agentListResult
-	if err := json.Unmarshal(out, &res); err != nil {
-		http.Error(w, "could not parse herdr output: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	agents := res.Result.Agents
-	if agents == nil {
-		agents = []Agent{}
-	}
-	// tag each agent with its git branch (deduped by cwd) for worktree awareness
 	branchByCwd := map[string]string{}
-	for i := range agents {
-		cwd := agents[i].Cwd
-		b, ok := branchByCwd[cwd]
-		if !ok {
-			b = gitBranch(cwd)
-			branchByCwd[cwd] = b
+	agents := []Agent{}
+	collect := func(raw []byte, session string) {
+		var res agentListResult
+		if json.Unmarshal(raw, &res) != nil {
+			return
 		}
-		agents[i].Branch = b
+		for i := range res.Result.Agents {
+			a := res.Result.Agents[i]
+			a.Session = session
+			b, ok := branchByCwd[a.Cwd]
+			if !ok {
+				b = gitBranch(a.Cwd)
+				branchByCwd[a.Cwd] = b
+			}
+			a.Branch = b
+			agents = append(agents, a)
+		}
+	}
+
+	sessions := listSessions()
+	if len(sessions) == 0 {
+		// No session enumeration available — fall back to the ambient session.
+		out, err := runHerdr("agent", "list")
+		if err != nil {
+			http.Error(w, "herdr agent list failed: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		collect(out, "")
+	} else {
+		for _, s := range sessions {
+			if !s.Running {
+				continue
+			}
+			if out, err := runHerdrOn(s.Socket, "agent", "list"); err == nil {
+				collect(out, s.Name)
+			}
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(agents)
 }
 
-// validPane extracts and validates the ?pane= query parameter.
-func validPane(w http.ResponseWriter, r *http.Request) (string, bool) {
-	p := r.URL.Query().Get("pane")
-	if !paneRe.MatchString(p) {
+// resolveTarget reads ?session=&pane=, validates the pane id, and returns the
+// herdr socket for that session ("" = ambient, for single-session use). Pane ids
+// collide across sessions, so aggregate callers must pass ?session=.
+func resolveTarget(w http.ResponseWriter, r *http.Request) (socket, pane string, ok bool) {
+	pane = r.URL.Query().Get("pane")
+	if !paneRe.MatchString(pane) {
 		http.Error(w, "bad or missing pane id", http.StatusBadRequest)
-		return "", false
+		return "", "", false
 	}
-	return p, true
+	if sess := r.URL.Query().Get("session"); sess != "" {
+		s, found := sessionSocket(sess)
+		if !found {
+			http.Error(w, "unknown session", http.StatusBadRequest)
+			return "", "", false
+		}
+		socket = s
+	}
+	return socket, pane, true
 }
 
 // handleRead returns a pane's recent output as plain text. Interim transcript
 // source until the structured-JSONL view lands; it's Claude's own terminal text,
 // not a framebuffer.
 func handleRead(w http.ResponseWriter, r *http.Request) {
-	pane, ok := validPane(w, r)
+	socket, pane, ok := resolveTarget(w, r)
 	if !ok {
 		return
 	}
-	out, err := runHerdr("pane", "read", pane, "--source", "recent", "--lines", "200", "--format", "text")
+	out, err := runHerdrOn(socket, "pane", "read", pane, "--source", "recent", "--lines", "200", "--format", "text")
 	if err != nil {
 		http.Error(w, "herdr pane read failed: "+err.Error(), http.StatusBadGateway)
 		return
@@ -176,7 +258,7 @@ func handleRead(w http.ResponseWriter, r *http.Request) {
 // handleSend types text into a pane and submits it (Enter) — a prompt to a
 // running agent. This steers an existing session; it never starts a new one.
 func handleSend(w http.ResponseWriter, r *http.Request) {
-	pane, ok := validPane(w, r)
+	socket, pane, ok := resolveTarget(w, r)
 	if !ok {
 		return
 	}
@@ -187,11 +269,11 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "expected JSON {text}", http.StatusBadRequest)
 		return
 	}
-	if _, err := runHerdr("pane", "send-text", pane, body.Text); err != nil {
+	if _, err := runHerdrOn(socket, "pane", "send-text", pane, body.Text); err != nil {
 		http.Error(w, "send failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	if _, err := runHerdr("pane", "send-keys", pane, "Enter"); err != nil {
+	if _, err := runHerdrOn(socket, "pane", "send-keys", pane, "Enter"); err != nil {
 		http.Error(w, "submit failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -201,7 +283,7 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 // handleKey sends raw keystrokes to a pane — for driving menus (approve/deny a
 // permission prompt, Esc to cancel, digit to pick an option).
 func handleKey(w http.ResponseWriter, r *http.Request) {
-	pane, ok := validPane(w, r)
+	socket, pane, ok := resolveTarget(w, r)
 	if !ok {
 		return
 	}
@@ -213,7 +295,7 @@ func handleKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	args := append([]string{"pane", "send-keys", pane}, body.Keys...)
-	if _, err := runHerdr(args...); err != nil {
+	if _, err := runHerdrOn(socket, args...); err != nil {
 		http.Error(w, "send-keys failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -466,8 +548,8 @@ func ppid(pid int) int {
 // paneSession resolves the Claude session running in a pane. The foreground
 // process may be a tool subprocess, so we walk up the process tree to the
 // claude process that owns a sessions file.
-func paneSession(pane string) (sessionFile, bool) {
-	out, err := runHerdr("pane", "process-info", "--pane", pane)
+func paneSession(socket, pane string) (sessionFile, bool) {
+	out, err := runHerdrOn(socket, "pane", "process-info", "--pane", pane)
 	if err != nil {
 		return sessionFile{}, false
 	}
@@ -513,12 +595,12 @@ func findTranscript(sessionID string) string {
 // handleTranscript renders the structured conversation for a pane. 404 tells the
 // UI to fall back to the raw pane read.
 func handleTranscript(w http.ResponseWriter, r *http.Request) {
-	pane, ok := validPane(w, r)
+	socket, pane, ok := resolveTarget(w, r)
 	if !ok {
 		return
 	}
 	var tpath, sid string
-	if sf, ok := paneSession(pane); ok { // hook-free primary path
+	if sf, ok := paneSession(socket, pane); ok { // hook-free primary path
 		sid = sf.SessionID
 		tpath = findTranscript(sf.SessionID)
 	}
@@ -549,7 +631,7 @@ func handleTranscript(w http.ResponseWriter, r *http.Request) {
 
 // handleRename sets (or, with an empty name, clears) an agent's custom name.
 func handleRename(w http.ResponseWriter, r *http.Request) {
-	pane, ok := validPane(w, r)
+	socket, pane, ok := resolveTarget(w, r)
 	if !ok {
 		return
 	}
@@ -562,15 +644,29 @@ func handleRename(w http.ResponseWriter, r *http.Request) {
 	}
 	var err error
 	if name := strings.TrimSpace(body.Name); name == "" {
-		_, err = runHerdr("agent", "rename", pane, "--clear")
+		_, err = runHerdrOn(socket, "agent", "rename", pane, "--clear")
 	} else {
-		_, err = runHerdr("agent", "rename", pane, name)
+		_, err = runHerdrOn(socket, "agent", "rename", pane, name)
 	}
 	if err != nil {
 		http.Error(w, "rename failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// targetSocket resolves a session name (from a request body) to its herdr
+// socket; "" means the ambient session. Writes a 400 for an unknown session.
+func targetSocket(w http.ResponseWriter, session string) (string, bool) {
+	if session == "" {
+		return "", true
+	}
+	s, found := sessionSocket(session)
+	if !found {
+		http.Error(w, "unknown session", http.StatusBadRequest)
+		return "", false
+	}
+	return s, true
 }
 
 // branchRe is a conservative guard for a branch name reaching the git/herdr CLI.
@@ -581,8 +677,9 @@ var branchRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$`)
 // as a new workspace on that branch.
 func handleNewWorktree(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Cwd  string `json:"cwd"`
-		Name string `json:"name"`
+		Cwd     string `json:"cwd"`
+		Name    string `json:"name"`
+		Session string `json:"session"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "expected JSON {cwd,name}", http.StatusBadRequest)
@@ -593,7 +690,11 @@ func handleNewWorktree(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "need a repo cwd and a valid branch name", http.StatusBadRequest)
 		return
 	}
-	out, err := runHerdr("worktree", "create", "--cwd", body.Cwd, "--branch", name, "--json")
+	socket, ok := targetSocket(w, body.Session)
+	if !ok {
+		return
+	}
+	out, err := runHerdrOn(socket, "worktree", "create", "--cwd", body.Cwd, "--branch", name, "--json")
 	if err != nil {
 		http.Error(w, "worktree create failed: "+err.Error(), http.StatusBadGateway)
 		return
@@ -611,7 +712,7 @@ func handleNewWorktree(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(out, &res)
 	pane := res.Result.RootPane.PaneID
 	if pane != "" {
-		_, _ = runHerdr("pane", "run", pane, "claude") // launch an agent in the fresh worktree
+		_, _ = runHerdrOn(socket, "pane", "run", pane, "claude") // launch an agent in the fresh worktree
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"pane": pane, "branch": name, "path": res.Result.Worktree.Path})
@@ -621,13 +722,18 @@ func handleNewWorktree(w http.ResponseWriter, r *http.Request) {
 // worktree/branch) — a fresh tab running claude.
 func handleNewAgent(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Cwd string `json:"cwd"`
+		Cwd     string `json:"cwd"`
+		Session string `json:"session"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Cwd) == "" {
 		http.Error(w, "need a cwd", http.StatusBadRequest)
 		return
 	}
-	out, err := runHerdr("tab", "create", "--cwd", body.Cwd, "--no-focus")
+	socket, ok := targetSocket(w, body.Session)
+	if !ok {
+		return
+	}
+	out, err := runHerdrOn(socket, "tab", "create", "--cwd", body.Cwd, "--no-focus")
 	if err != nil {
 		http.Error(w, "agent start failed: "+err.Error(), http.StatusBadGateway)
 		return
@@ -642,7 +748,7 @@ func handleNewAgent(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(out, &res)
 	pane := res.Result.RootPane.PaneID
 	if pane != "" {
-		_, _ = runHerdr("pane", "run", pane, "claude")
+		_, _ = runHerdrOn(socket, "pane", "run", pane, "claude")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"pane": pane})
