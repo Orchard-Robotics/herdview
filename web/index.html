@@ -122,6 +122,15 @@
 
   /* detail */
   .detail{display:flex;flex-direction:column;gap:.7rem;flex:1;min-height:0;}
+  .artifacts{flex:0 0 auto;border:1px solid var(--border);border-radius:11px;background:var(--surface);overflow:hidden;}
+  .art-h{appearance:none;border:none;background:transparent;color:var(--accent-ink);width:100%;text-align:left;font-weight:600;
+    font-family:var(--mono);font-size:.74rem;padding:.5rem .7rem;cursor:pointer;display:flex;justify-content:space-between;align-items:center;-webkit-tap-highlight-color:transparent;}
+  .art-h .chev{color:var(--faint);font-weight:400;}
+  .art-list{display:flex;flex-direction:column;max-height:30vh;overflow-y:auto;border-top:1px solid var(--border);}
+  .art-item{padding:.5rem .7rem;font-family:var(--mono);font-size:.76rem;color:var(--accent-ink);
+    text-decoration:none;border-top:1px solid var(--border);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .art-item:first-child{border-top:none;}
+  .art-item:active{background:var(--surface-2);}
   .term{background:var(--term-bg);border:1px solid var(--border);border-radius:11px;
     padding:.8rem .9rem;font-family:var(--mono);font-size:.76rem;line-height:1.5;color:var(--ink);
     white-space:pre-wrap;word-break:break-word;overflow-y:auto;
@@ -361,6 +370,15 @@
   }
   function saveSent(session, pane, arr){ try{ const a=arr.slice(-40); a.length ? localStorage.setItem(sentKey(session,pane), JSON.stringify(a)) : localStorage.removeItem(sentKey(session,pane)); }catch{} }
 
+  // Artifact links the agent produces — collected (deduped, persisted, accumulating
+  // so they don't roll off with the transcript tail) and opened in a new tab, since
+  // claude.ai artifacts can't be embedded (X-Frame-Options: SAMEORIGIN).
+  const ARTIFACT_RE = /https?:\/\/claude\.ai\/(?:code\/artifact|public\/artifacts)\/[A-Za-z0-9-]+/g;
+  const artKey = (session, pane) => "herdview:artifacts:" + (session||"") + ":" + pane;
+  const artLabel = u => { const m = u.match(/\/([A-Za-z0-9-]+)\/?$/); return "artifact · " + (m ? m[1].slice(0,8) : u); };
+  function loadArtifacts(session, pane){ try{ return JSON.parse(localStorage.getItem(artKey(session,pane)) || "[]"); }catch{ return []; } }
+  function saveArtifacts(session, pane, arr){ try{ const a=arr.slice(-50); a.length ? localStorage.setItem(artKey(session,pane), JSON.stringify(a)) : localStorage.removeItem(artKey(session,pane)); }catch{} }
+
   // Demo mode: when served without a backend (as an artifact), render baked-in
   // sample data so the UI is testable from a link. Never true on the local http
   // server (localhost/tailnet are plain http, not a claude.ai host).
@@ -523,6 +541,17 @@
   }
 
   // ---- detail / chat ----
+  // Collapsible collection of artifact links; each opens in a new tab.
+  function Artifacts({ items }){
+    const [open, setOpen] = useState(false);
+    return html`<div class="artifacts">
+      <button class="art-h" type="button" onClick=${() => setOpen(o => !o)}>🔗 Artifacts (${items.length}) <span class="chev">${open ? "▾" : "▸"}</span></button>
+      ${open ? html`<div class="art-list">
+        ${items.map((u, i) => html`<a class="art-item" key=${i} href=${u} target="_blank" rel="noopener noreferrer" title=${u}>${artLabel(u)}</a>`)}
+      </div>` : null}
+    </div>`;
+  }
+
   function Detail({ agent, session }){
     const pane = agent.pane_id;
     const status = agent.agent_status || "unknown";
@@ -538,6 +567,7 @@
     const [preview, setPreview] = useState("…");
     const [choices, setChoices] = useState({ question:"", options:[] });
     const [chosen, setChosen] = useState(null);   // option the user tapped (optimistic, until the picker clears)
+    const [artifacts, setArtifacts] = useState(() => loadArtifacts(session, pane));
     const [, setTick] = useState(0);     // drives elapsed/preview refresh each poll
 
     // Track the start of the current working episode (kept through transient
@@ -589,6 +619,24 @@
       const id = setInterval(tick, 1500);
       return () => { alive = false; clearInterval(id); };
     }, [status, pane, session]);
+
+    // Collect any artifact links from the transcript into the (persisted) collection.
+    useEffect(() => {
+      const texts = [];
+      if(data.msgs) for(const m of data.msgs){ if(m.text) texts.push(m.text); }
+      if(data.readText) texts.push(data.readText);
+      const found = [];
+      for(const t of texts){ const mm = t.match(ARTIFACT_RE); if(mm) found.push(...mm); }
+      if(!found.length) return;
+      setArtifacts(prev => {
+        const set = new Set(prev); let changed = false;
+        for(const u of found){ if(!set.has(u)){ set.add(u); changed = true; } }
+        if(!changed) return prev;
+        const next = [...set];
+        saveArtifacts(session, pane, next);
+        return next;
+      });
+    }, [data, session, pane]);
 
     // Keep the panel's terminal preview fresh whenever it's open.
     useEffect(() => {
@@ -678,6 +726,7 @@
     const blockedPending = status === "blocked" ? lastPending(data.msgs) : null;
 
     return html`<div class="detail">
+      ${artifacts.length ? html`<${Artifacts} items=${artifacts} />` : null}
       <div class="convo" id="convo" ref=${convoRef} onScroll=${onScroll}>
         <div class="msgs" id="msgs">${items}</div>
         <div class="statusslot" id="statusslot">
