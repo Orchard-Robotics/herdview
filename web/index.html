@@ -515,13 +515,17 @@
       sendBtn.disabled = true;
       saveDraft(view.pane, text);          // persist before the round-trip, in case it fails
       msg.value = ""; msg.style.height = "auto";
-      // optimistic: show my message instantly (dimmed) so there's no wait for the round-trip
+      // Track as "pending sent" so it stays visible across transcript refreshes:
+      // the JSONL file lags the live session, so a plain optimistic bubble would
+      // be wiped by renderConvo before the message ever lands on disk.
+      pendingSent.push(text);
       const om = mkBubble({role:"user", text}); om.classList.add("pending"); msgsEl.appendChild(om); stick();
       try {
         await sendMsg(view.pane, text);
         clearDraft(view.pane);             // actually delivered — drop the cached draft
         toast("Sent"); setTimeout(refresh, 300);
       } catch(e){
+        pendingSent = pendingSent.filter(t => t !== text);   // didn't send — drop it
         om.remove();
         msg.value = text; fitMsg();        // put your text back in the box…
         saveDraft(view.pane, text);        // …and keep it cached so a reload won't lose it
@@ -538,6 +542,7 @@
 
     // stay pinned to the bottom unless the user scrolls up to read history
     let pinned = true, lastSig = null, lastText = null, workingSince = null, showRun = false, actMode = null, lastAct = null;
+    let pendingSent = [];   // messages sent but not yet reflected in the transcript file (it lags the live session)
     convo.addEventListener("scroll", () => {
       pinned = convo.scrollHeight - convo.scrollTop - convo.clientHeight < 80;
     });
@@ -665,11 +670,17 @@
 
     function renderConvo(msgs, status){
       const real = (msgs||[]).filter(m => (m.text&&m.text.trim()) || (m.tools&&m.tools.length));
-      const sig = real.map(m => m.role[0]+":"+((m.text||"").length)+":"+((m.tools||[]).map(t=>t.name).join(","))).join("|");
+      // Drop any queued sends that have now landed in the transcript so they don't
+      // render twice; whatever hasn't landed yet stays as a dimmed pending bubble.
+      if(pendingSent.length){
+        pendingSent = pendingSent.filter(pt => !real.some(m => m.role==="user" && (m.text||"").trim() === pt));
+      }
+      const sig = real.map(m => m.role[0]+":"+((m.text||"").length)+":"+((m.tools||[]).map(t=>t.name).join(","))).join("|")
+                + "##" + pendingSent.join("|");
       if(sig !== lastSig){                       // rebuild only the messages when the conversation changed
         lastSig = sig; lastText = null;
         msgsEl.innerHTML = "";
-        if(!real.length){ msgsEl.appendChild(mkSys("no messages yet")); }
+        if(!real.length && !pendingSent.length){ msgsEl.appendChild(mkSys("no messages yet")); }
         let prev = null;
         for(const m of real){
           if(m.role==="assistant" && !(m.text&&m.text.trim()) && m.tools && m.tools.length){
@@ -680,6 +691,12 @@
             msgsEl.appendChild(node);
           }
           prev = m.role;
+        }
+        for(const pt of pendingSent){            // sent, but the transcript file hasn't caught up yet
+          const node = mkBubble({role:"user", text:pt}); node.classList.add("pending");
+          if(prev==="user") node.classList.add("grouped");
+          msgsEl.appendChild(node);
+          prev = "user";
         }
       }
       stick();
