@@ -543,11 +543,17 @@ func parseTranscript(data []byte) []uiMsg {
 		}
 		var l struct {
 			Type    string `json:"type"`
+			IsMeta  bool   `json:"isMeta"`
 			Message struct {
 				Content json.RawMessage `json:"content"`
 			} `json:"message"`
 		}
 		if json.Unmarshal(raw, &l) != nil {
+			continue
+		}
+		if l.IsMeta {
+			// Injected/meta content (skill bodies, slash-command expansions, etc.)
+			// is written as a user-role turn but isn't something the human typed.
 			continue
 		}
 		switch l.Type {

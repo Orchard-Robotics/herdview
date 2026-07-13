@@ -78,6 +78,7 @@ func TestParseTranscriptSkipsSystemInjected(t *testing.T) {
 {"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>abc</task-id>\n</task-notification>"}}
 {"type":"user","message":{"role":"user","content":"<system-reminder>be careful</system-reminder>"}}
 {"type":"user","message":{"role":"user","content":"[SYSTEM NOTIFICATION - NOT USER INPUT] a background event"}}
+{"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"# /loop — skill body injected on load"}]}}
 `
 	out := parseTranscript([]byte(jsonl))
 	if len(out) != 1 {
