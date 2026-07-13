@@ -46,6 +46,18 @@ test("a pending send survives a browser refresh (delivered-but-unconfirmed isn't
   await expect(page.locator(".msg.user.pending .bubble", { hasText: "queued while working" }).first()).toBeVisible();
 });
 
+test("Shift+Enter sends; plain Enter stays a newline", async ({ page }) => {
+  await page.goto("/");
+  await page.locator('[data-pane="w3:p1"]').click();
+  const msg = page.locator("#msg");
+  await msg.fill("shift send me");
+  await msg.press("Enter");                       // newline — must NOT send
+  await page.waitForTimeout(400);
+  expect(env.readSendlog()).not.toContain("shift send me");
+  await msg.press("Shift+Enter");                  // send
+  await expect.poll(() => env.readSendlog()).toContain("shift send me");
+});
+
 test("a cached draft is restored when the pane is reopened", async ({ page }) => {
   await page.goto("/");
   // seed a draft directly (as if a prior failed send left it)

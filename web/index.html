@@ -33,6 +33,7 @@
   body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
     -webkit-font-smoothing:antialiased;display:flex;flex-direction:column;
     position:fixed;top:0;right:0;bottom:0;left:0;overflow:hidden;}
+  #root{display:flex;flex-direction:column;flex:1;min-height:0;}
   header{flex:0 0 auto;z-index:2;background:color-mix(in srgb,var(--bg) 88%,transparent);
     backdrop-filter:blur(8px);border-bottom:1px solid var(--border);
     padding:calc(env(safe-area-inset-top) + .8rem) 1.1rem .8rem;
@@ -48,6 +49,21 @@
     display:flex;flex-direction:column;gap:.7rem;overflow:hidden;}
   .scroller{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;touch-action:pan-y;
     -webkit-overflow-scrolling:touch;display:flex;flex-direction:column;gap:.7rem;padding-bottom:.5rem;}
+
+  /* responsive master-detail split (wide only; mobile stays single-column) */
+  .split{flex:1;min-height:0;display:flex;flex-direction:column;}
+  .pane-list,.pane-detail{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;}
+  .split[data-sel="0"] .pane-detail{display:none;}
+  .split[data-sel="1"] .pane-list{display:none;}
+  .pane-empty{flex:1;display:flex;align-items:center;justify-content:center;
+    color:var(--muted);font-size:.9rem;font-family:var(--mono);}
+  @media(min-width:820px){
+    main.wide-split{max-width:1120px;}
+    .split{flex-direction:row;gap:1.1rem;}
+    .split .pane-list{display:flex!important;flex:0 0 340px;min-width:0;}
+    .split .pane-detail{display:flex!important;flex:1;min-width:0;
+      border-left:1px solid var(--border);padding-left:1.1rem;}
+  }
 
   /* grid */
   .card{background:var(--surface);border:1px solid var(--border);border-radius:13px;
@@ -176,6 +192,7 @@
     font-size:.95rem;line-height:1;cursor:pointer;padding:.1rem .35rem;margin:-.2rem -.2rem 0 0;}
   @media(prefers-reduced-motion:reduce){.typing span{animation:none!important;}.convo{scroll-behavior:auto!important;}}
   .keys{display:flex;flex-direction:column;gap:.5rem;}
+  .keys:empty{display:none;}
   .permcard{background:var(--blocked-soft);border:1px solid var(--blocked);border-radius:12px;padding:.75rem .85rem;}
   .permh{font-family:var(--mono);font-size:.68rem;letter-spacing:.05em;color:var(--blocked);margin-bottom:.35rem;}
   .permname{font-weight:640;font-size:.92rem;}
@@ -183,6 +200,10 @@
     padding:.55rem .65rem;font-family:var(--mono);font-size:.76rem;line-height:1.45;
     white-space:pre-wrap;word-break:break-word;overflow:auto;max-height:38vh;}
   .permbtns{display:flex;flex-wrap:wrap;gap:.45rem;}
+  .permbtns.choices{flex-direction:column;}
+  .permbtns.choices .key{text-align:left;width:100%;transition:opacity .15s ease;}
+  .permbtns.choices .key.chosen{background:var(--accent);color:#fff;border-color:transparent;font-weight:640;}
+  .permbtns.choices .key.dimmed{opacity:.38;}
   .key{appearance:none;border:1px solid var(--border);background:var(--surface);color:var(--ink);
     font-family:var(--mono);font-size:.78rem;border-radius:9px;padding:.5rem .7rem;cursor:pointer;}
   .key:active{transform:translateY(1px);}
@@ -203,36 +224,27 @@
 </style>
 </head>
 <body>
-  <header>
-    <button class="back" id="back" hidden>← back</button>
-    <h1 id="title"><span class="g">❯</span> herd<span class="g">view</span></h1>
-    <span class="count" id="count">—</span>
-    <button class="newwt" id="newwt" type="button" title="new worktree">＋</button>
-  </header>
-  <main id="app"><div class="empty">Loading agents…</div></main>
-  <footer id="foot">mirroring this herdr session · v0.3</footer>
+  <div id="root"></div>
 
-<script>
+<!-- Map the bare "preact" specifier the vendored hooks module imports to the
+     local file, so everything loads offline with no build step. -->
+<script type="importmap">
+{ "imports": { "preact": "./vendor/preact.module.js" } }
+</script>
+<script type="module">
+  import { h, render, Fragment } from "preact";
+  import { useState, useEffect, useRef, useLayoutEffect } from "./vendor/hooks.module.js";
+  import htm from "./vendor/htm.module.js";
+  const html = htm.bind(h);
+
   const STATE_ORDER = { blocked:0, working:1, idle:2, unknown:3 };
-  const app = document.getElementById("app");
-  const title = document.getElementById("title");
-  const count = document.getElementById("count");
-  const back = document.getElementById("back");
-  const foot = document.getElementById("foot");
-  const newwt = document.getElementById("newwt");
-
-  let view = { name:"grid", pane:null, agent:null };
-  let timer = null;
-  let lastAgents = [];
-  let lastGridSig = null;   // skip grid rebuilds (and scroll resets) when unchanged
-  let lastSessionsSig = null;
-  let gated = false;        // true when 2+ sessions → the session gate is in play
 
   const shortPath = p => { if(!p) return ""; const a=p.split("/").filter(Boolean); return a.length<=2?p:"…/"+a.slice(-2).join("/"); };
-  const esc = s => (s||"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
   // w3:p1 → "workspace 3 · pane 1" (raw id kept as tooltip)
   const prettyPane = id => { const m = /^w([0-9A-Za-z]+):p([0-9A-Za-z]+)$/.exec(id || ""); return m ? `workspace ${m[1]} · pane ${m[2]}` : (id || ""); };
-  // brief confirmation pill so taps feel acknowledged before the next poll
+
+  // brief confirmation pill so taps feel acknowledged before the next poll.
+  // Kept imperative (appended to <body>) so it lives outside the Preact tree.
   function toast(msg){
     let t = document.getElementById("hv-toast");
     if(!t){ t = document.createElement("div"); t.id = "hv-toast"; t.className = "toast"; document.body.appendChild(t); }
@@ -303,8 +315,8 @@
         const code = document.createElement("code"); code.textContent = buf.join("\n");
         pre.appendChild(code); parent.appendChild(pre); continue;
       }
-      const h = line.match(/^(#{1,6})\s+(.*)$/);
-      if(h){ closeList(); const d = document.createElement("div"); d.className = "md-h"; mdInline(d, h[2]); parent.appendChild(d); i++; continue; }
+      const hd = line.match(/^(#{1,6})\s+(.*)$/);
+      if(hd){ closeList(); const d = document.createElement("div"); d.className = "md-h"; mdInline(d, hd[2]); parent.appendChild(d); i++; continue; }
       const bul = line.match(/^\s*[-*+]\s+(.*)$/), ord = line.match(/^\s*\d+\.\s+(.*)$/);
       if(bul || ord){
         const tag = bul ? "ul" : "ol";
@@ -402,431 +414,466 @@
     if(DEMO){ const a=DEMO_DATA.agents.find(x=>x.pane_id===pane); if(a){ if(name) a.name=name; else delete a.name; } return; }
     await api("/api/pane/rename?"+pq(pane,session), {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
   }
-  async function renameAgent(a){
-    const name = prompt("Rename agent (leave blank to reset):", a.name || "");
-    if(name === null) return;
-    try { await sendRename(a.pane_id, a.session, name.trim()); await renderGrid(); }
-    catch(e){ alert("rename failed: "+e.message); }
-  }
   async function sendNewWorktree(cwd, name, session){
     if(DEMO){ DEMO_DATA.agents.unshift({pane_id:"w9:p1",workspace_id:"w9",agent:"claude",agent_status:"working",cwd,branch:name,focused:false}); return; }
     await api("/api/worktree", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cwd,name,session})});
   }
-  async function newWorktree(){
-    const base = lastAgents.find(a=>a.focused) || lastAgents[0];
-    if(!base){ alert("No agent to derive a repo from."); return; }
-    const name = prompt(`New worktree — branch name\n(repo: ${shortPath(base.cwd)}, launches a Claude agent)`, "");
-    if(name === null) return;
-    const n = name.trim(); if(!n) return;
-    try { await sendNewWorktree(base.cwd, n, base.session); setTimeout(renderGrid, 600); }
-    catch(e){ alert("worktree create failed: "+e.message); }
-  }
   async function sendNewAgent(cwd, session){
-    if(DEMO){ DEMO_DATA.agents.unshift({pane_id:"w9:p2",workspace_id:"w9",agent:"claude",agent_status:"working",cwd,branch:(lastAgents[0]||{}).branch,focused:false}); return; }
+    if(DEMO){ DEMO_DATA.agents.unshift({pane_id:"w9:p2",workspace_id:"w9",agent:"claude",agent_status:"working",cwd,branch:(DEMO_DATA.agents[0]||{}).branch,focused:false}); return; }
     await api("/api/agent", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({cwd,session})});
   }
-  async function newAgent(){
-    const base = lastAgents.find(a=>a.focused) || lastAgents[0];
-    const dir = prompt("New agent — working directory (opens a new tab, no branch):", base ? base.cwd : "");
-    if(dir === null) return;
-    const d = dir.trim(); if(!d) return;
-    try { await sendNewAgent(d, base ? base.session : ""); setTimeout(renderGrid, 600); }
-    catch(e){ alert("agent start failed: "+e.message); }
-  }
-  // ＋ opens a small sheet: new agent (new tab) or new worktree (new branch).
-  function openNewMenu(){
-    const base = lastAgents.find(a=>a.focused) || lastAgents[0];
-    const repo = base ? shortPath(base.cwd) : "—";
-    const ov = document.createElement("div"); ov.className = "sheet-ov";
-    ov.innerHTML = `
-      <div class="sheet">
-        <div class="sheet-h">new in ${esc(repo)}</div>
-        <button class="sheet-b" data-act="agent">＋ New agent<span>a fresh tab running Claude — no branch</span></button>
-        <button class="sheet-b" data-act="worktree">⎇ New worktree<span>new git branch + a Claude agent</span></button>
-        <button class="sheet-b cancel" data-act="cancel">Cancel</button>
-      </div>`;
-    ov.addEventListener("click", e => {
-      const b = e.target.closest("[data-act]");
-      if(!b){ if(e.target === ov) ov.remove(); return; }
-      ov.remove();
-      if(b.dataset.act === "agent") newAgent();
-      else if(b.dataset.act === "worktree") newWorktree();
-    });
-    document.body.appendChild(ov);
-  }
-  newwt.onclick = openNewMenu;
 
-  function schedule(fn){ clearInterval(timer); fn(); timer = setInterval(fn, view.name==="grid"?2000:1500); }
-
-  // ---- grid ----
-  function agentCard(a, showBranch){
-    const s = a.agent_status||"unknown";
-    const el = document.createElement("div"); el.className = "card "+s;
-    el.dataset.pane = a.pane_id;   // stable hooks for automated tests
-    el.dataset.session = a.session || "";
-    el.innerHTML = `
-      <div class="row">
-        <span class="name">${esc(a.name || a.agent) || "agent"} <span class="chev">›</span></span>
-        <span class="pill ${s}"><span class="dot"></span>${s}</span>
-      </div>
-      <div class="path">${esc(shortPath(a.cwd))}</div>
-      ${(showBranch && a.branch) ? `<div class="branch">⎇ ${esc(a.branch)}</div>` : ""}
-      <div class="meta">
-        <span title="${esc(a.pane_id)}">${esc(prettyPane(a.pane_id))}${a.focused?' · <span class="focus">focused</span>':""}</span>
-        <button class="rename" type="button">✎ rename</button>
-      </div>`;
-    el.onclick = () => openDetail(a);
-    el.querySelector(".rename").addEventListener("click", e => { e.stopPropagation(); renameAgent(a); });
-    return el;
+  // The most recent tool_use turn still awaiting a result (walking back until a
+  // user turn). Labels the activity indicator and the blocked-permission card.
+  function lastPending(msgs){
+    for(let i=(msgs||[]).length-1; i>=0; i--){ const m=msgs[i]; if(m.role==="user") break; if(m.role==="assistant" && m.tools && m.tools.length) return m.tools; }
+    return null;
   }
-  // ---- sessions gate (shown only when 2+ sessions exist) ----
-  function sessionCard(name, info){
-    const s = info.blocked ? "blocked" : (info.working ? "working" : "idle");
-    const el = document.createElement("div"); el.className = "card " + s;
-    el.dataset.sessionName = name;
-    el.innerHTML = `
-      <div class="row">
-        <span class="name">▸ ${esc(name || "session")} <span class="chev">›</span></span>
-        <span class="pill ${s}"><span class="dot"></span>${info.n} agent${info.n===1?"":"s"}</span>
-      </div>
-      ${info.blocked?`<div class="path">${info.blocked} need you</div>`:""}`;
-    el.onclick = () => enterGrid(name);
-    return el;
+  // Quick "thinking" blip vs a longer run. Elapsed is measured from when this
+  // working episode began, so the dots always show first and the pill appears
+  // once it crosses the threshold. The tool name (if mid tool_use) labels it.
+  function activityFor(status, msgs, since){
+    if(status !== "working") return null;
+    const act = {};
+    const pend = lastPending(msgs || []);
+    if(pend && pend.length){ act.tool = pend.map(t=>t.name).join(" · "); act.pending = pend; }
+    if(since) act.elapsed = Math.floor((Date.now() - since) / 1000);
+    return act;
   }
-  async function renderSessions(){
-    view = { name:"sessions", pane:null, agent:null, session:null };
-    back.hidden = true; foot.hidden = true; newwt.hidden = true;
-    title.innerHTML = '<span class="g">❯</span> herd<span class="g">view</span>';
-    let agents;
-    try { agents = await fetchAgents(); }
-    catch(e){ app.innerHTML = `<div class="error">can't reach herdr: ${e.message}</div>`; lastSessionsSig=null; return; }
-    lastAgents = agents;
+  function fmtElapsed(s){ return s < 60 ? s+"s" : Math.floor(s/60)+"m "+String(s%60).padStart(2,"0")+"s"; }
+  function pillLabel(act){
+    let t = act.tool ? ("⚙ "+act.tool) : "✳ Working";
+    if(act.elapsed != null) t += " · " + fmtElapsed(act.elapsed);
+    return t + "  ▸";                                  // always a tap affordance
+  }
+  // Aggregate agents into per-session summaries; keys sorted blocked-first.
+  function sessionSummary(agents){
     const map = {}, order = [];
     for(const a of agents){ const k = a.session || ""; if(!map[k]){ map[k]={n:0,blocked:0,working:0}; order.push(k); } map[k].n++; if(a.agent_status==="blocked") map[k].blocked++; else if(a.agent_status==="working") map[k].working++; }
     const keys = order.sort((x,y)=>(map[x].blocked?0:1)-(map[y].blocked?0:1) || x.localeCompare(y));
-    gated = keys.length > 1;
-    if(!gated){ enterGrid(keys[0] || ""); return; }   // single session → skip the gate
-    const totalBlocked = keys.reduce((s,k)=>s+map[k].blocked,0);
-    count.textContent = `${keys.length} sessions`+(totalBlocked?` · ${totalBlocked} need you`:"");
-    const sig = keys.map(k=>`${k}:${map[k].n}:${map[k].blocked}:${map[k].working}`).join("|");
-    if(sig === lastSessionsSig) return;
-    lastSessionsSig = sig;
-    const prev = app.querySelector(".scroller"); const savedY = prev ? prev.scrollTop : 0;
-    app.innerHTML="";
-    const scr = document.createElement("div"); scr.className="scroller";
-    for(const k of keys) scr.appendChild(sessionCard(k, map[k]));
-    app.appendChild(scr); scr.scrollTop = savedY;
-  }
-  function enterGrid(session){
-    view = { name:"grid", session, pane:null, agent:null };
-    back.hidden = !gated;                 // back exists only when there's a gate to return to
-    foot.hidden = false; newwt.hidden = false;
-    title.innerHTML = gated ? `<span class="g">❯</span> ${esc(session||"session")}` : '<span class="g">❯</span> herd<span class="g">view</span>';
-    lastGridSig = null;
-    schedule(renderGrid);
+    return { map, keys };
   }
 
-  // ---- agents grid (scoped to the selected session) ----
-  async function renderGrid(){
-    let agents;
-    try { agents = await fetchAgents(); }
-    catch(e){ app.innerHTML = `<div class="error">can't reach herdr: ${e.message}</div>`; lastGridSig=null; return; }
-    lastAgents = agents;
-    const mine = agents.filter(a => (a.session||"") === (view.session||""));
-    mine.sort((a,b)=>(STATE_ORDER[a.agent_status]??3)-(STATE_ORDER[b.agent_status]??3));
-    const blocked = mine.filter(a=>a.agent_status==="blocked").length;
-    count.textContent = `${mine.length} agent${mine.length===1?"":"s"}`+(blocked?` · ${blocked} need you`:"");
-    // Rebuild only on change so a 2s poll doesn't recreate .scroller and jump to top.
-    const sig = mine.map(a=>[a.pane_id,a.agent_status,a.name||"",a.branch||"",a.focused?1:0].join("~")).join("|");
-    if(sig === lastGridSig) return;
-    lastGridSig = sig;
-    const prev = app.querySelector(".scroller"); const savedY = prev ? prev.scrollTop : 0;
-    if(!mine.length){ app.innerHTML='<div class="empty">No agents in this session.</div>'; return; }
+  // Renders text into an owned DOM node via the XSS-safe imperative builders
+  // (linkify / renderMarkdown). The vnode carries no children, so Preact never
+  // touches what we append here; the effect only re-runs when the text changes.
+  function Rendered({ text, markdown, tag, className }){
+    const ref = useRef(null);
+    useLayoutEffect(() => {
+      const el = ref.current; if(!el) return;
+      el.textContent = "";
+      if(markdown) renderMarkdown(el, text || ""); else linkify(el, text || "");
+    }, [text, markdown]);
+    return h(tag || "div", { ref, class: className });
+  }
+
+  function Bubble({ m, grouped, pending }){
+    const role = m.role === "user" ? "user" : "assistant";
+    const cls = "msg " + role + (grouped ? " grouped" : "") + (pending ? " pending" : "");
+    return html`<div class=${cls}>
+      <div class="bubble">
+        ${m.text ? html`<${Rendered} text=${m.text} markdown=${role === "assistant"} />` : null}
+        ${m.tools && m.tools.length ? html`<div class="tools">
+          ${m.tools.map((t, i) => html`<span class="toolchip" key=${i} title=${t.summary || undefined}>⚙ ${t.name}</span>`)}
+        </div>` : null}
+      </div>
+    </div>`;
+  }
+
+  function AgentCard({ a, showBranch, onSelect, onRename }){
+    const s = a.agent_status || "unknown";
+    return html`<div class=${"card " + s} data-pane=${a.pane_id} data-session=${a.session || ""} onClick=${() => onSelect(a)}>
+      <div class="row">
+        <span class="name">${(a.name || a.agent) || "agent"} <span class="chev">›</span></span>
+        <span class=${"pill " + s}><span class="dot"></span>${s}</span>
+      </div>
+      <div class="path">${shortPath(a.cwd)}</div>
+      ${showBranch && a.branch ? html`<div class="branch">⎇ ${a.branch}</div>` : null}
+      <div class="meta">
+        <span title=${a.pane_id}>${prettyPane(a.pane_id)}${a.focused ? html` · <span class="focus">focused</span>` : ""}</span>
+        <button class="rename" type="button" onClick=${e => { e.stopPropagation(); onRename(a); }}>✎ rename</button>
+      </div>
+    </div>`;
+  }
+
+  function SessionCard({ name, info, onClick }){
+    const s = info.blocked ? "blocked" : (info.working ? "working" : "idle");
+    return html`<div class=${"card " + s} data-session-name=${name} onClick=${onClick}>
+      <div class="row">
+        <span class="name">▸ ${name || "session"} <span class="chev">›</span></span>
+        <span class=${"pill " + s}><span class="dot"></span>${info.n} agent${info.n === 1 ? "" : "s"}</span>
+      </div>
+      ${info.blocked ? html`<div class="path">${info.blocked} need you</div>` : null}
+    </div>`;
+  }
+
+  // Agent grid for one session; branch-grouped only when there's more than one.
+  function Grid({ agents, onSelect, onRename }){
+    if(!agents.length) return html`<div class="empty">No agents in this session.</div>`;
     const groups = {};
-    for(const a of mine){ const k = a.branch || "no branch"; (groups[k] = groups[k] || []).push(a); }
+    for(const a of agents){ const k = a.branch || "no branch"; (groups[k] = groups[k] || []).push(a); }
     const keys = Object.keys(groups).sort((x,y)=>(groups[x].some(a=>a.agent_status==="blocked")?0:1)-(groups[y].some(a=>a.agent_status==="blocked")?0:1) || x.localeCompare(y));
     const grouped = keys.length > 1;
-    app.innerHTML="";
-    const scr = document.createElement("div"); scr.className = "scroller";
-    for(const k of keys){
-      if(grouped){ const h=document.createElement("div"); h.className="group"; h.textContent=`⎇ ${k} · ${groups[k].length}`; scr.appendChild(h); }
-      for(const a of groups[k]) scr.appendChild(agentCard(a, !grouped));
-    }
-    app.appendChild(scr); scr.scrollTop = savedY;
+    return html`<div class="scroller">
+      ${keys.map(k => html`
+        ${grouped ? html`<div class="group" key=${"g:" + k}>⎇ ${k} · ${groups[k].length}</div>` : null}
+        ${groups[k].map(a => html`<${AgentCard} key=${a.pane_id} a=${a} showBranch=${!grouped} onSelect=${onSelect} onRename=${onRename} />`)}
+      `)}
+    </div>`;
   }
 
-  // ---- detail ----
-  function openDetail(a){
-    view = { name:"detail", pane:a.pane_id, session:a.session, agent:a };
-    back.hidden = false; foot.hidden = true; newwt.hidden = true;
-    title.innerHTML = `${esc(a.name || a.agent)} <span class="g">·</span> <span style="font-family:var(--mono);font-size:.78rem;color:var(--muted)" title="${esc(a.pane_id)}">${esc(prettyPane(a.pane_id))}</span>`;
-    app.innerHTML = `
-      <div class="detail">
-        <div class="convo" id="convo">
-          <div class="msgs" id="msgs"><div class="hint">loading…</div></div>
-          <div class="statusslot" id="statusslot"></div>
-        </div>
-        <div class="keys" id="keys"></div>
-        <div class="prompt">
-          <textarea id="msg" rows="1" placeholder="Message this agent…"></textarea>
-          <button class="send" id="sendbtn">Send</button>
-        </div>
-        <div class="hint">types into the live session · Enter = newline · tap Send to send</div>
-      </div>`;
-    const convo = document.getElementById("convo");      // scroll container
-    const msgsEl = document.getElementById("msgs");       // messages only (rebuilt on change)
-    const msg = document.getElementById("msg");
-    const sendBtn = document.getElementById("sendbtn");
-    const fitMsg = () => { msg.style.height = "auto"; msg.style.height = Math.min(msg.scrollHeight, 128) + "px"; };
+  // ---- detail / chat ----
+  function Detail({ agent, session }){
+    const pane = agent.pane_id;
+    const status = agent.agent_status || "unknown";
+
+    const taRef = useRef(null);
+    const convoRef = useRef(null);
+    const pinnedRef = useRef(true);      // stay pinned to bottom unless scrolled up
+    const workingSince = useRef(null);
+    const [sending, setSending] = useState(false);
+    const [sentLog, setSentLog] = useState(() => loadSent(session, pane));
+    const [data, setData] = useState({ mode:"loading", msgs:null, readText:"" });
+    const [showRun, setShowRun] = useState(false);
+    const [preview, setPreview] = useState("…");
+    const [choices, setChoices] = useState({ question:"", options:[] });
+    const [chosen, setChosen] = useState(null);   // option the user tapped (optimistic, until the picker clears)
+    const [, setTick] = useState(0);     // drives elapsed/preview refresh each poll
+
+    // Track the start of the current working episode (kept through transient
+    // blocked/unknown flickers; cleared only when the agent goes idle).
+    useEffect(() => {
+      if(status === "working"){ if(!workingSince.current) workingSince.current = Date.now(); }
+      else if(status === "idle"){ workingSince.current = null; }
+    }, [status]);
+
     // Restore any unsent/failed draft for this pane (survives reload / reconnect).
-    { const d = loadDraft(view.pane); if(d){ msg.value = d; fitMsg(); } }
+    useEffect(() => {
+      const d = loadDraft(pane);
+      if(d && taRef.current){ taRef.current.value = d; fit(); }
+    }, []);
+
+    // Poll the transcript (or read fallback) and prune expired pending sends.
+    useEffect(() => {
+      let alive = true;
+      async function refresh(){
+        try {
+          const tr = await fetchTranscript(pane, session);
+          if(!alive) return;
+          if(tr){ setData({ mode:"convo", msgs: tr.messages || [], readText:"" }); }
+          else { const txt = await fetchRead(pane, session); if(!alive) return; setData({ mode:"text", msgs:null, readText: txt || "" }); }
+        } catch(e){ if(alive) setData({ mode:"text", msgs:null, readText:"can't read pane: " + e.message }); }
+        if(!alive) return;
+        setSentLog(prev => {
+          const now = Date.now();
+          const live = prev.filter(e => now - e.ts < SENT_TTL);
+          if(live.length !== prev.length){ saveSent(session, pane, live); return live; }
+          return prev;
+        });
+        setTick(t => t + 1);
+      }
+      refresh();
+      const id = setInterval(refresh, 1500);
+      return () => { alive = false; clearInterval(id); };
+    }, [pane, session]);
+
+    // When blocked, poll for a parsed multiple-choice picker so we can render
+    // tappable answers instead of raw terminal + generic approve/deny keys.
+    useEffect(() => {
+      if(status !== "blocked"){ setChoices({ question:"", options:[] }); setChosen(null); return; }
+      let alive = true;
+      async function tick(){
+        try{ const r = await fetch("/api/pane/choices?"+pq(pane, session), {cache:"no-store"}); if(alive && r.ok){ const c = await r.json(); setChoices(c); if(!c.options || !c.options.length) setChosen(null); } }catch{}
+      }
+      tick();
+      const id = setInterval(tick, 1500);
+      return () => { alive = false; clearInterval(id); };
+    }, [status, pane, session]);
+
+    // Keep the panel's terminal preview fresh whenever it's open.
+    useEffect(() => {
+      if(!showRun) return;
+      let alive = true;
+      fetchRead(pane, session).then(txt => {
+        if(!alive) return;
+        const lines = (txt || "").replace(/\s+$/, "").split("\n").slice(-8).join("\n");
+        setPreview(lines || "(no recent output)");
+      }).catch(() => {});
+      return () => { alive = false; };
+    }, [showRun, data, pane, session]);
+
+    // Stick to the bottom after any render, but only if the user hasn't scrolled up.
+    useLayoutEffect(() => { const c = convoRef.current; if(c && pinnedRef.current) c.scrollTop = c.scrollHeight; });
+
+    function fit(){ const ta = taRef.current; if(!ta) return; ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 128) + "px"; }
+    function onScroll(){ const c = convoRef.current; if(c) pinnedRef.current = c.scrollHeight - c.scrollTop - c.clientHeight < 80; }
+    function onInput(){ fit(); saveDraft(pane, taRef.current.value); }
 
     async function send(){
-      const text = msg.value.trim(); if(!text) return;
-      sendBtn.disabled = true;
-      saveDraft(view.pane, text);          // persist before the round-trip, in case it fails
-      msg.value = ""; msg.style.height = "auto";
+      const ta = taRef.current; const text = (ta.value || "").trim(); if(!text) return;
+      setSending(true);
+      saveDraft(pane, text);                // persist before the round-trip, in case it fails
+      ta.value = ""; ta.style.height = "auto";
       // Log the send so it stays visible across refreshes (the transcript/terminal
       // lags the live session); render decides idempotently when it's confirmed.
-      sentLog.push({t:text, ts:Date.now()}); saveSent(view.session, view.pane, sentLog);   // survives a refresh; TTL-bounded
-      const om = mkBubble({role:"user", text}); om.classList.add("pending"); msgsEl.appendChild(om); stick();
+      setSentLog(prev => { const next = [...prev, { t:text, ts:Date.now() }]; saveSent(session, pane, next); return next; });
       try {
-        await sendMsg(view.pane, view.session, text);
-        clearDraft(view.pane);             // actually delivered — drop the cached draft
-        toast("Sent"); setTimeout(refresh, 300);
+        await sendMsg(pane, session, text);
+        clearDraft(pane);                   // actually delivered — drop the cached draft
+        toast("Sent");
       } catch(e){
-        for(let _i=sentLog.length-1;_i>=0;_i--){ if(sentLog[_i].t===text){ sentLog.splice(_i,1); break; } } saveSent(view.session, view.pane, sentLog);   // didn't send — drop it
-        om.remove();
-        msg.value = text; fitMsg();        // put your text back in the box…
-        saveDraft(view.pane, text);        // …and keep it cached so a reload won't lose it
+        setSentLog(prev => {                // didn't send — drop the last matching entry
+          const next = prev.slice();
+          for(let i = next.length - 1; i >= 0; i--){ if(next[i].t === text){ next.splice(i, 1); break; } }
+          saveSent(session, pane, next); return next;
+        });
+        ta.value = text; fit();             // put your text back in the box…
+        saveDraft(pane, text);              // …and keep it cached so a reload won't lose it
         toast("Send failed — message kept");
-      } finally { sendBtn.disabled = false; }
+      } finally { setSending(false); }
     }
-    async function key(...keys){
-      try { await sendKeys(view.pane, view.session, keys); setTimeout(refresh, 250); }
-      catch(e){ alert("key failed: "+e.message); }
-    }
-    sendBtn.onclick = send;
-    // Enter inserts a newline (normal chat-app behavior); sending is the button only.
-    msg.addEventListener("input", () => { fitMsg(); saveDraft(view.pane, msg.value); });
+    async function key(...keys){ try{ await sendKeys(pane, session, keys); }catch(e){ alert("key failed: "+e.message); } }
 
-    // stay pinned to the bottom unless the user scrolls up to read history
-    let pinned = true, lastSig = null, lastText = null, workingSince = null, showRun = false, actMode = null, lastAct = null;
-    let sentLog = loadSent(view.session, view.pane);   // restored across refresh so a pending send isn't lost
-    convo.addEventListener("scroll", () => {
-      pinned = convo.scrollHeight - convo.scrollTop - convo.clientHeight < 80;
-    });
-    const stick = () => { if(pinned) convo.scrollTop = convo.scrollHeight; };
+    // ---- derive what to render ----
+    const real = (data.msgs || []).filter(m => (m.text && m.text.trim()) || (m.tools && m.tools.length));
+    const act = activityFor(status, data.msgs, workingSince.current);
+    const actMode = (act && act.elapsed != null && act.elapsed >= 8) ? "pill" : "dots";
+    const now = Date.now();
 
-    schedule(refresh);
-    async function refresh(){
-      let agents=[]; try{ agents = await fetchAgents(); }catch{}
-      const cur = agents.find(x=>x.pane_id===view.pane && (x.session||"")===(view.session||"")) || view.agent;
-      const status = cur.agent_status||"unknown";
-      if(status==="working"){ if(!workingSince) workingSince=Date.now(); }
-      else if(status==="idle"){ workingSince=null; }   // keep the timer through transient blocked/unknown flickers
-      let msgs=null, readText=null;
-      try {
-        const tr = await fetchTranscript(view.pane, view.session);
-        if(tr){ msgs=tr.messages; renderConvo(msgs, status); renderKeys(status, lastPending(msgs)); }
-        else { readText = await fetchRead(view.pane, view.session); renderText(readText, status); renderKeys(status, null); }
-      } catch(e){ renderText("can't read pane: "+e.message, status); renderKeys(status, null); }
-      renderActivity(status, activityFor(status, msgs));
-    }
-    // Quick "thinking" blip vs a longer run. Elapsed is measured from when this
-    // working episode began — reliable and starts at 0, so the dots always show
-    // first and the pill appears once it crosses the threshold. The tool name
-    // (if the agent is mid tool_use) labels what's running.
-    function activityFor(status, msgs){
-      if(status !== "working") return null;
-      const act = {};
-      const pend = lastPending(msgs || []);
-      if(pend && pend.length){ act.tool = pend.map(t=>t.name).join(" · "); act.pending = pend; }
-      if(workingSince) act.elapsed = Math.floor((Date.now() - workingSince) / 1000);
-      return act;
-    }
-    function lastPending(msgs){
-      for(let i=(msgs||[]).length-1; i>=0; i--){ const m=msgs[i]; if(m.role==="user") break; if(m.role==="assistant" && m.tools && m.tools.length) return m.tools; }
-      return null;
-    }
-
-    function mkBubble(m){
-      const wrap = document.createElement("div");
-      wrap.className = "msg " + (m.role==="user"?"user":"assistant");
-      const b = document.createElement("div"); b.className = "bubble";
-      if(m.text){ if(m.role === "assistant") renderMarkdown(b, m.text); else linkify(b, m.text); }
-      if(m.tools && m.tools.length){
-        const tw = document.createElement("div"); tw.className = "tools";
-        for(const t of m.tools){ const c=document.createElement("span"); c.className="toolchip"; c.textContent="⚙ "+t.name; if(t.summary) c.title=t.summary; tw.appendChild(c); }
-        b.appendChild(tw);
-      }
-      wrap.appendChild(b); return wrap;
-    }
-    const mkSys = t => { const s=document.createElement("div"); s.className="sys"; s.textContent=t; return s; };
-    function mkTyping(){ const b=document.createElement("button"); b.type="button"; b.className="typing"; b.innerHTML="<span></span><span></span><span></span>"; return b; }
-
-    function fmtElapsed(s){ return s < 60 ? s+"s" : Math.floor(s/60)+"m "+String(s%60).padStart(2,"0")+"s"; }
-    function pillLabel(act){
-      let t = act.tool ? ("⚙ "+act.tool) : "✳ Working";
-      if(act.elapsed != null) t += " · " + fmtElapsed(act.elapsed);
-      return t + "  ▸";                                  // always a tap affordance
-    }
-    function mkActPill(act){
-      const el = document.createElement("button"); el.className = "actpill"; el.type = "button";
-      el.textContent = pillLabel(act); return el;
-    }
-    // Panel shown when you tap the working indicator: what's running + a live
-    // preview of recent output + interrupt controls (available the whole time).
-    function ensurePanel(){
-      const sb = document.getElementById("statusslot");
-      let p = sb.querySelector(".runpanel"); if(p) return p;
-      p = document.createElement("div"); p.className = "runpanel";
-      const h = document.createElement("div"); h.className = "permh runhead";
-      const lbl = document.createElement("span"); lbl.textContent = "what's happening";
-      const min = document.createElement("button"); min.className = "minbtn"; min.type = "button";
-      min.textContent = "✕"; min.setAttribute("aria-label", "minimize");
-      min.addEventListener("click", () => { showRun = false; drawPanel(); });
-      h.appendChild(lbl); h.appendChild(min); p.appendChild(h);
-      const pend = document.createElement("div"); pend.className = "pend"; p.appendChild(pend);
-      const prev = document.createElement("pre"); prev.className = "permcmd preview"; prev.textContent = "…"; p.appendChild(prev);
-      const bar = document.createElement("div"); bar.className = "permbtns";
-      const cc = document.createElement("button"); cc.className = "key warn"; cc.textContent = "⛔ Ctrl-C";
-      cc.addEventListener("click", () => { key("C-c"); toast("Ctrl-C sent"); showRun = false; drawPanel(); });
-      const esc = document.createElement("button"); esc.className = "key"; esc.textContent = "⎋ Esc";
-      esc.addEventListener("click", () => { key("Escape"); toast("Esc sent"); showRun = false; drawPanel(); });
-      bar.appendChild(cc); bar.appendChild(esc); p.appendChild(bar);
-      document.getElementById("statusslot").appendChild(p); return p;
-    }
-    async function drawPanel(){
-      const sb = document.getElementById("statusslot"); if(!sb) return;
-      const existing = sb.querySelector(".runpanel");
-      if(!showRun){ if(existing) existing.remove(); return; }
-      const p = ensurePanel();
-      const pend = p.querySelector(".pend"); pend.innerHTML = "";
-      for(const t of ((lastAct && lastAct.pending) || [])){
-        const nm = document.createElement("div"); nm.className = "permname";
-        nm.textContent = "⚙ " + t.name + (t.summary ? ": " + t.summary : "");
-        pend.appendChild(nm);
-      }
-      try {
-        const txt = await fetchRead(view.pane, view.session);
-        const lines = (txt || "").replace(/\s+$/, "").split("\n").slice(-8).join("\n");
-        p.querySelector(".preview").textContent = lines || "(no recent output)";
-      } catch {}
-      stick();
-    }
-    // Activity lives in a dedicated slot at the bottom of the messages, so message
-    // re-renders never touch it (no flicker). Both the dots and the pill are
-    // tappable at any time → open the panel to preview + interrupt.
-    function renderActivity(status, act){
-      lastAct = act;
-      const sb = document.getElementById("statusslot"); if(!sb) return;
-      if(status !== "working"){ if(actMode){ sb.innerHTML = ""; actMode = null; showRun = false; } return; }
-      const mode = (act && act.elapsed != null && act.elapsed >= 8) ? "pill" : "dots";
-      if(mode !== actMode){                         // structure changed → rebuild the indicator once
-        sb.innerHTML = ""; actMode = mode;
-        const ind = mode === "pill" ? mkActPill(act) : mkTyping();
-        ind.addEventListener("click", () => { showRun = !showRun; drawPanel(); });
-        sb.appendChild(ind);
-        drawPanel();                                // re-adds the panel if it was open
-        stick();
-      } else if(mode === "pill"){                    // update label in place (no churn)
-        const pill = sb.querySelector(".actpill"); if(pill) pill.textContent = pillLabel(act);
-        drawPanel();
-      } else {
-        drawPanel();                                // dots mode: keep preview fresh if open
-      }
-    }
-
-    function renderConvo(msgs, status){
-      const real = (msgs||[]).filter(m => (m.text&&m.text.trim()) || (m.tools&&m.tools.length));
-      // Sent messages not yet reflected in the transcript stay as pending bubbles.
-      // Computed idempotently: for each text, show only the sends beyond the count
-      // already confirmed in the transcript — so identical duplicates each get a
-      // bubble and repeated refreshes never over-consume.
+    let items;
+    if(data.mode === "loading"){
+      items = html`<div class="hint">loading…</div>`;
+    } else if(data.mode === "text"){
+      // No structured transcript to reconcile against, so a sent message clears
+      // once its text shows up in the terminal output.
+      const txt = data.readText || "";
+      const pend = sentLog.filter(e => now - e.ts < SENT_TTL).filter(e => !txt.includes(e.t)).map(e => e.t);
+      items = [
+        html`<${Rendered} key="term" tag="pre" className="term" text=${txt} markdown=${false} />`,
+        ...pend.map((pt, i) => html`<${Bubble} key=${"pt" + i} m=${{ role:"user", text:pt }} pending=${true} />`),
+      ];
+    } else {
+      // Sent messages not yet in the transcript stay as pending bubbles. For each
+      // text, show only the sends beyond the count already confirmed — so
+      // identical duplicates each get a bubble and refreshes never over-consume.
       const realCount = {};
-      for(const m of real){ if(m.role==="user"){ const k=(m.text||"").trim(); realCount[k]=(realCount[k]||0)+1; } }
-      const now = Date.now();
-      const live = sentLog.filter(e => now - e.ts < SENT_TTL);
-      if(live.length !== sentLog.length){ sentLog = live; saveSent(view.session, view.pane, sentLog); }
+      for(const m of real){ if(m.role === "user"){ const k=(m.text||"").trim(); realCount[k]=(realCount[k]||0)+1; } }
       const seen = {}, pend = [];
-      for(const e of sentLog){ seen[e.t]=(seen[e.t]||0)+1; if(seen[e.t] > (realCount[e.t]||0)) pend.push(e.t); }
-      const sig = real.map(m => m.role[0]+":"+((m.text||"").length)+":"+((m.tools||[]).map(t=>t.name).join(","))).join("|")
-                + "##" + pend.join("|");
-      if(sig !== lastSig){                       // rebuild only the messages when the conversation changed
-        lastSig = sig; lastText = null;
-        msgsEl.innerHTML = "";
-        if(!real.length && !pend.length){ msgsEl.appendChild(mkSys("no messages yet")); }
-        let prev = null;
-        for(const m of real){
-          if(m.role==="assistant" && !(m.text&&m.text.trim()) && m.tools && m.tools.length){
-            msgsEl.appendChild(mkSys("⚙ "+m.tools.map(t=>t.name).join(" · ")));   // tool-only turn → system line
-          } else {
-            const node = mkBubble(m);
-            if(prev===m.role) node.classList.add("grouped");
-            msgsEl.appendChild(node);
-          }
-          prev = m.role;
+      for(const e of sentLog){ if(now - e.ts >= SENT_TTL) continue; seen[e.t]=(seen[e.t]||0)+1; if(seen[e.t] > (realCount[e.t]||0)) pend.push(e.t); }
+      const out = [];
+      if(!real.length && !pend.length){ out.push(html`<div class="sys" key="none">no messages yet</div>`); }
+      let prev = null;
+      real.forEach((m, idx) => {
+        if(m.role === "assistant" && !(m.text && m.text.trim()) && m.tools && m.tools.length){
+          out.push(html`<div class="sys" key=${"m" + idx}>⚙ ${m.tools.map(t=>t.name).join(" · ")}</div>`);   // tool-only turn → system line
+        } else {
+          out.push(html`<${Bubble} key=${"m" + idx} m=${m} grouped=${prev === m.role} />`);
         }
-        for(const pt of pend){                   // sent, but the transcript hasn't caught up yet
-          const node = mkBubble({role:"user", text:pt}); node.classList.add("pending");
-          if(prev==="user") node.classList.add("grouped");
-          msgsEl.appendChild(node);
-          prev = "user";
-        }
-      }
-      stick();
+        prev = m.role;
+      });
+      pend.forEach((pt, i) => { out.push(html`<${Bubble} key=${"pend" + i} m=${{ role:"user", text:pt }} pending=${true} grouped=${prev === "user"} />`); prev = "user"; });
+      items = out;
     }
-    function renderText(txt, status){
-      txt = txt || "";
-      // No structured transcript here to reconcile against, so a sent message
-      // clears once its text shows up in the terminal output.
-      const now = Date.now();
-      const live = sentLog.filter(e => now - e.ts < SENT_TTL);
-      if(live.length !== sentLog.length){ sentLog = live; saveSent(view.session, view.pane, sentLog); }
-      const pend = sentLog.filter(e => !txt.includes(e.t)).map(e => e.t);
-      const sig = txt + "|" + pend.join("|");
-      if(sig !== lastText){
-        lastText = sig; lastSig = null;
-        msgsEl.innerHTML = "";
-        const pre = document.createElement("pre"); pre.className = "term"; linkify(pre, txt);
-        msgsEl.appendChild(pre);
-        for(const pt of pend){   // sent messages stay visible on the read fallback too
-          const node = mkBubble({role:"user", text:pt}); node.classList.add("pending");
-          msgsEl.appendChild(node);
-        }
-      }
-      stick();
-    }
-    function renderKeys(status, pending){
-      const keys = document.getElementById("keys"); if(!keys) return;
-      if(status !== "blocked"){ keys.innerHTML = ""; return; }
-      keys.innerHTML = "";
-      if(pending && pending.length){
-        const card = document.createElement("div"); card.className = "permcard";
-        const h = document.createElement("div"); h.className = "permh"; h.textContent = "⏸ Waiting for you — wants to:"; card.appendChild(h);
-        for(const t of pending){
-          const nm = document.createElement("div"); nm.className = "permname"; nm.textContent = t.name; card.appendChild(nm);
-          if(t.summary){ const pre = document.createElement("pre"); pre.className = "permcmd"; pre.textContent = t.summary; card.appendChild(pre); }
-        }
-        keys.appendChild(card);
-      }
-      const bar = document.createElement("div"); bar.className = "permbtns";
-      const mkBtn = (label, cls, k, note) => { const el=document.createElement("button"); el.className="key"+(cls?" "+cls:""); el.textContent=label; el.addEventListener("click", ()=>{ key(k); if(note) toast(note); }); return el; };
-      bar.appendChild(mkBtn("✓ Approve", "go", "Enter", "Approved ✓"));
-      bar.appendChild(mkBtn("↓", null, "Down"));
-      bar.appendChild(mkBtn("↑", null, "Up"));
-      bar.appendChild(mkBtn("✕ Deny", "warn", "Escape", "Denied"));
-      keys.appendChild(bar);
-    }
+
+    const blockedPending = status === "blocked" ? lastPending(data.msgs) : null;
+
+    return html`<div class="detail">
+      <div class="convo" id="convo" ref=${convoRef} onScroll=${onScroll}>
+        <div class="msgs" id="msgs">${items}</div>
+        <div class="statusslot" id="statusslot">
+          ${status === "working" ? html`
+            ${actMode === "pill"
+              ? html`<button class="actpill" type="button" onClick=${() => setShowRun(s => !s)}>${pillLabel(act)}</button>`
+              : html`<button class="typing" type="button" onClick=${() => setShowRun(s => !s)}><span></span><span></span><span></span></button>`}
+            ${showRun ? html`<div class="runpanel">
+              <div class="permh runhead">
+                <span>what's happening</span>
+                <button class="minbtn" type="button" aria-label="minimize" onClick=${() => setShowRun(false)}>✕</button>
+              </div>
+              <div class="pend">
+                ${((act && act.pending) || []).map((t, i) => html`<div class="permname" key=${i}>⚙ ${t.name}${t.summary ? ": " + t.summary : ""}</div>`)}
+              </div>
+              <pre class="permcmd preview">${preview}</pre>
+              <div class="permbtns">
+                <button class="key warn" type="button" onClick=${() => { key("C-c"); toast("Ctrl-C sent"); setShowRun(false); }}>⛔ Ctrl-C</button>
+                <button class="key" type="button" onClick=${() => { key("Escape"); toast("Esc sent"); setShowRun(false); }}>⎋ Esc</button>
+              </div>
+            </div>` : null}
+          ` : null}
+        </div>
+      </div>
+      <div class="keys" id="keys">
+        ${status === "blocked" ? (choices.options && choices.options.length ? html`
+          <div class="permcard">
+            <div class="permh">⏸ ${choices.question || "Choose an option"}</div>
+          </div>
+          <div class="permbtns choices">
+            ${choices.options.map(o => html`
+              <button class="key ${o.n === chosen ? "chosen" : (chosen != null ? "dimmed" : (o.selected ? "go" : ""))}" type="button" key=${o.n}
+                disabled=${chosen != null}
+                onClick=${() => { setChosen(o.n); key(String(o.n)); toast("Chose " + o.n + ". " + o.label); }}>${o.n}. ${o.label}</button>
+            `)}
+          </div>
+          <div class="hint">${chosen != null ? "sent — waiting for the agent…" : "tap an option — it's sent to the agent"}</div>
+        ` : html`
+          ${blockedPending && blockedPending.length ? html`<div class="permcard">
+            <div class="permh">⏸ Waiting for you — wants to:</div>
+            ${blockedPending.map((t, i) => html`
+              <div class="permname" key=${"n" + i}>${t.name}</div>
+              ${t.summary ? html`<pre class="permcmd" key=${"c" + i}>${t.summary}</pre>` : null}
+            `)}
+          </div>` : null}
+          <div class="permbtns">
+            <button class="key go" type="button" onClick=${() => { key("Enter"); toast("Approved ✓"); }}>✓ Approve</button>
+            <button class="key" type="button" onClick=${() => key("Down")}>↓</button>
+            <button class="key" type="button" onClick=${() => key("Up")}>↑</button>
+            <button class="key warn" type="button" onClick=${() => { key("Escape"); toast("Denied"); }}>✕ Deny</button>
+          </div>
+        `) : null}
+      </div>
+      <div class="prompt">
+        <textarea id="msg" rows="1" placeholder="Message this agent…" ref=${taRef} onInput=${onInput}
+          onKeyDown=${(e) => { if(e.key === "Enter" && e.shiftKey){ e.preventDefault(); send(); } }}></textarea>
+        <button class="send" id="sendbtn" onClick=${send} disabled=${sending}>Send</button>
+      </div>
+      <div class="hint">types into the live session · Enter = newline · Shift+Enter or Send to send</div>
+    </div>`;
   }
 
-  back.onclick = () => {
-    if(view.name==="detail"){ enterGrid(view.session); }        // detail → that session's agents
-    else { lastSessionsSig = null; schedule(renderSessions); }  // grid (gated) → sessions gate (force rebuild)
-  };
+  // Poll the aggregate agent list; `poke` forces an immediate refetch after an action.
+  function useAgents(){
+    const [agents, setAgents] = useState(null);
+    const [err, setErr] = useState(null);
+    const pokeRef = useRef(null);
+    useEffect(() => {
+      let alive = true;
+      async function tick(){ try{ const a = await fetchAgents(); if(alive){ setAgents(a); setErr(null); } }catch(e){ if(alive) setErr(e.message); } }
+      pokeRef.current = tick;
+      tick();
+      const id = setInterval(tick, 1500);
+      return () => { alive = false; clearInterval(id); };
+    }, []);
+    return { agents, err, poke: () => pokeRef.current && pokeRef.current() };
+  }
 
-  schedule(renderSessions);
+  function useWide(){
+    const [wide, setWide] = useState(() => window.matchMedia("(min-width:820px)").matches);
+    useEffect(() => {
+      const mq = window.matchMedia("(min-width:820px)");
+      const on = () => setWide(mq.matches);
+      mq.addEventListener ? mq.addEventListener("change", on) : mq.addListener(on);
+      return () => { mq.removeEventListener ? mq.removeEventListener("change", on) : mq.removeListener(on); };
+    }, []);
+    return wide;
+  }
+
+  function App(){
+    const { agents, err, poke } = useAgents();
+    const wide = useWide();
+    const [chosenSession, setChosenSession] = useState(null);   // set once a session gate card is picked
+    const [selectedPane, setSelectedPane] = useState(null);     // selected agent within the active session
+    const [sheetOpen, setSheetOpen] = useState(false);
+
+    const list = agents || [];
+    const { map, keys } = sessionSummary(list);
+    const gated = keys.length > 1;                              // 2+ sessions → the session gate is in play
+    const showGate = gated && chosenSession == null;
+    const activeSession = gated ? chosenSession : (keys[0] || "");
+    const mine = list.filter(a => (a.session||"") === (activeSession||""))
+                     .sort((a,b)=>(STATE_ORDER[a.agent_status]??3)-(STATE_ORDER[b.agent_status]??3));
+    const selAgent = (!showGate && selectedPane) ? mine.find(a => a.pane_id === selectedPane) : null;
+    const inDetail = !wide && !!selAgent;                       // narrow: a selected agent is a full-screen detail
+
+    // ---- actions ----
+    async function renameAgent(a){
+      const name = prompt("Rename agent (leave blank to reset):", a.name || "");
+      if(name === null) return;
+      try { await sendRename(a.pane_id, a.session, name.trim()); poke(); }
+      catch(e){ alert("rename failed: "+e.message); }
+    }
+    async function newWorktree(){
+      const base = list.find(a=>a.focused) || list[0];
+      if(!base){ alert("No agent to derive a repo from."); return; }
+      const name = prompt(`New worktree — branch name\n(repo: ${shortPath(base.cwd)}, launches a Claude agent)`, "");
+      if(name === null) return;
+      const n = name.trim(); if(!n) return;
+      try { await sendNewWorktree(base.cwd, n, base.session); setTimeout(poke, 600); }
+      catch(e){ alert("worktree create failed: "+e.message); }
+    }
+    async function newAgent(){
+      const base = list.find(a=>a.focused) || list[0];
+      const dir = prompt("New agent — working directory (opens a new tab, no branch):", base ? base.cwd : "");
+      if(dir === null) return;
+      const d = dir.trim(); if(!d) return;
+      try { await sendNewAgent(d, base ? base.session : ""); setTimeout(poke, 600); }
+      catch(e){ alert("agent start failed: "+e.message); }
+    }
+    function onBack(){ if(inDetail){ setSelectedPane(null); } else { setChosenSession(null); setSelectedPane(null); } }
+    function onSelectSession(name){ setChosenSession(name); setSelectedPane(null); }
+
+    // ---- header ----
+    const backVis = showGate ? false : (inDetail ? true : gated);
+    const newwtVis = !showGate && !inDetail;
+    let title, count;
+    if(showGate){
+      const totalBlocked = keys.reduce((s,k)=>s+map[k].blocked,0);
+      title = html`<span class="g">❯</span> herd<span class="g">view</span>`;
+      count = `${keys.length} sessions` + (totalBlocked ? ` · ${totalBlocked} need you` : "");
+    } else if(inDetail){
+      title = html`${(selAgent.name || selAgent.agent)} <span class="g">·</span> <span style="font-family:var(--mono);font-size:.78rem;color:var(--muted)" title=${selAgent.pane_id}>${prettyPane(selAgent.pane_id)}</span>`;
+      const blocked = mine.filter(a=>a.agent_status==="blocked").length;
+      count = `${mine.length} agent${mine.length===1?"":"s"}` + (blocked?` · ${blocked} need you`:"");
+    } else {
+      title = gated ? html`<span class="g">❯</span> ${activeSession||"session"}` : html`<span class="g">❯</span> herd<span class="g">view</span>`;
+      const blocked = mine.filter(a=>a.agent_status==="blocked").length;
+      count = `${mine.length} agent${mine.length===1?"":"s"}` + (blocked?` · ${blocked} need you`:"");
+    }
+
+    // ---- body ----
+    let body;
+    if(agents === null){
+      body = html`<main>${err ? html`<div class="error">can't reach herdr: ${err}</div>` : html`<div class="empty">Loading agents…</div>`}</main>`;
+    } else if(showGate){
+      body = html`<main><div class="scroller">
+        ${keys.map(k => html`<${SessionCard} key=${k} name=${k} info=${map[k]} onClick=${() => onSelectSession(k)} />`)}
+      </div></main>`;
+    } else {
+      body = html`<main class=${wide ? "wide-split" : ""}>
+        <div class="split" data-sel=${selAgent ? "1" : "0"}>
+          <div class="pane-list"><${Grid} agents=${mine} onSelect=${a => setSelectedPane(a.pane_id)} onRename=${renameAgent} /></div>
+          <div class="pane-detail">
+            ${selAgent
+              ? html`<${Detail} key=${(activeSession||"") + ":" + selectedPane} agent=${selAgent} session=${activeSession} />`
+              : html`<div class="pane-empty">Select an agent</div>`}
+          </div>
+        </div>
+      </main>`;
+    }
+
+    const base = list.find(a=>a.focused) || list[0];
+    const repo = base ? shortPath(base.cwd) : "—";
+
+    return html`<${Fragment}>
+      <header>
+        <button class="back" id="back" hidden=${!backVis} onClick=${onBack}>← back</button>
+        <h1 id="title">${title}</h1>
+        <span class="count" id="count">${count}</span>
+        <button class="newwt" id="newwt" type="button" title="new worktree" hidden=${!newwtVis} onClick=${() => setSheetOpen(true)}>＋</button>
+      </header>
+      ${body}
+      ${(!showGate && !inDetail && agents !== null) ? html`<footer id="foot">mirroring this herdr session · v0.4</footer>` : null}
+      ${sheetOpen ? html`<div class="sheet-ov" onClick=${e => { if(e.target === e.currentTarget) setSheetOpen(false); }}>
+        <div class="sheet">
+          <div class="sheet-h">new in ${repo}</div>
+          <button class="sheet-b" data-act="agent" onClick=${() => { setSheetOpen(false); newAgent(); }}>＋ New agent<span>a fresh tab running Claude — no branch</span></button>
+          <button class="sheet-b" data-act="worktree" onClick=${() => { setSheetOpen(false); newWorktree(); }}>⎇ New worktree<span>new git branch + a Claude agent</span></button>
+          <button class="sheet-b cancel" onClick=${() => setSheetOpen(false)}>Cancel</button>
+        </div>
+      </div>` : null}
+    </${Fragment}>`;
+  }
+
+  render(html`<${App} />`, document.getElementById("root"));
 </script>
 </body>
 </html>

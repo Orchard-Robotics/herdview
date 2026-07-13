@@ -302,6 +302,86 @@ func handleKey(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// choice is one option in a Claude multiple-choice prompt (AskUserQuestion,
+// permission menu, plan approval — all rendered as a numbered, ↑/↓-navigable
+// selector where pressing the digit selects AND submits).
+type choice struct {
+	N        int    `json:"n"`
+	Label    string `json:"label"`
+	Selected bool   `json:"selected"`
+}
+
+// choiceRe matches a selector option line: an optional ❯ cursor, then "N. label".
+var choiceRe = regexp.MustCompile(`^\s*(\x{276F})?\s*(\d+)\.\s+(.*\S)\s*$`)
+
+// parseChoices extracts the question + numbered options from a pane's terminal
+// text when it's sitting on a Claude selector. ok=false if it isn't one.
+func parseChoices(read string) (question string, opts []choice, ok bool) {
+	// The selector always shows this navigation footer.
+	if !strings.Contains(read, "to navigate") || !strings.Contains(read, "select") {
+		return "", nil, false
+	}
+	lines := strings.Split(read, "\n")
+	firstOpt := -1
+	for i, ln := range lines {
+		m := choiceRe.FindStringSubmatch(ln)
+		if m == nil {
+			continue
+		}
+		n, _ := strconv.Atoi(m[2])
+		opts = append(opts, choice{N: n, Label: strings.TrimSpace(m[3]), Selected: m[1] != ""})
+		if firstOpt < 0 {
+			firstOpt = i
+		}
+	}
+	if len(opts) == 0 {
+		return "", nil, false
+	}
+	// The question is the last meaningful line above the first option (skipping
+	// separators, box drawing, the ☐ header, and the ❯ input echo).
+	skip := func(s string) bool {
+		if s == "" {
+			return true
+		}
+		switch s[0:1] {
+		case "$":
+			return true
+		}
+		for _, p := range []string{"─", "☐", "❯", "│", "╭", "╰", "├", "└", "┌"} {
+			if strings.HasPrefix(s, p) {
+				return true
+			}
+		}
+		return false
+	}
+	for i := 0; i < firstOpt; i++ {
+		if t := strings.TrimSpace(lines[i]); !skip(t) {
+			question = t
+		}
+	}
+	return question, opts, true
+}
+
+// handleChoices returns the parsed multiple-choice options for a pane on a
+// selector, so the UI can render tappable answers. Empty options = not a picker.
+func handleChoices(w http.ResponseWriter, r *http.Request) {
+	socket, pane, ok := resolveTarget(w, r)
+	if !ok {
+		return
+	}
+	out, err := runHerdrOn(socket, "pane", "read", pane, "--source", "visible", "--lines", "60", "--format", "text")
+	if err != nil {
+		http.Error(w, "herdr pane read failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	question, opts, found := parseChoices(string(out))
+	if !found {
+		opts = []choice{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"question": question, "options": opts})
+}
+
 // ---- pane → transcript mapping (populated by the `herdview hook` Claude hook) ----
 
 func stateDir() string {
@@ -439,6 +519,22 @@ func toolSummary(name string, input json.RawMessage) string {
 }
 
 // parseTranscript turns transcript JSONL into simple user/assistant turns.
+// isSystemInjected reports whether a type:"user" transcript turn is actually a
+// system-injected message (task-notification, system-reminder, slash-command
+// echo, command output) rather than something the human typed. Claude writes
+// these as user-role turns, so without this they'd render as the user's own
+// chat bubbles in the mirror.
+func isSystemInjected(s string) bool {
+	t := strings.TrimSpace(s)
+	return strings.HasPrefix(t, "<task-notification>") ||
+		strings.HasPrefix(t, "<system-reminder>") ||
+		strings.HasPrefix(t, "<command-name>") ||
+		strings.HasPrefix(t, "<command-message>") ||
+		strings.HasPrefix(t, "<local-command-stdout>") ||
+		strings.HasPrefix(t, "Caveat: The messages below") ||
+		strings.Contains(t, "[SYSTEM NOTIFICATION")
+}
+
 func parseTranscript(data []byte) []uiMsg {
 	out := []uiMsg{}
 	for _, raw := range bytes.Split(data, []byte{'\n'}) {
@@ -458,7 +554,7 @@ func parseTranscript(data []byte) []uiMsg {
 		case "user":
 			var s string
 			if json.Unmarshal(l.Message.Content, &s) == nil {
-				if strings.TrimSpace(s) != "" {
+				if strings.TrimSpace(s) != "" && !isSystemInjected(s) {
 					out = append(out, uiMsg{Role: "user", Text: s})
 				}
 				continue
@@ -471,8 +567,8 @@ func parseTranscript(data []byte) []uiMsg {
 						txt = append(txt, b.Text)
 					}
 				}
-				if len(txt) > 0 {
-					out = append(out, uiMsg{Role: "user", Text: strings.Join(txt, "\n")})
+				if joined := strings.Join(txt, "\n"); len(txt) > 0 && !isSystemInjected(joined) {
+					out = append(out, uiMsg{Role: "user", Text: joined})
 				}
 			}
 		case "assistant":
@@ -782,6 +878,7 @@ func main() {
 	mux.HandleFunc("/api/pane/transcript", handleTranscript)
 	mux.HandleFunc("/api/pane/send", handleSend)
 	mux.HandleFunc("/api/pane/key", handleKey)
+	mux.HandleFunc("/api/pane/choices", handleChoices)
 	mux.HandleFunc("/api/pane/rename", handleRename)
 	mux.HandleFunc("/api/worktree", handleNewWorktree)
 	mux.HandleFunc("/api/agent", handleNewAgent)

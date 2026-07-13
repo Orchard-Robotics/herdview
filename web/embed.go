@@ -5,7 +5,8 @@ package web
 
 import "embed"
 
-// FS is rooted at this directory, so index.html is served at "/".
+// FS is rooted at this directory, so index.html is served at "/" and the
+// vendored ES modules (Preact/hooks/htm — no build step, no CDN) at "/vendor/".
 //
-//go:embed index.html
+//go:embed index.html vendor
 var FS embed.FS

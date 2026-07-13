@@ -71,6 +71,71 @@ func TestGuard(t *testing.T) {
 // TestParseTranscript feeds a representative Claude JSONL slice and asserts the
 // bubble mapping: user string -> bubble, assistant text+tool_use -> bubble with
 // a tool chip, and a tool_result-only user turn is filtered out (not a bubble).
+// System-injected user turns (task-notifications, system-reminders, command
+// echoes) must NOT render as the user's own chat bubbles.
+func TestParseTranscriptSkipsSystemInjected(t *testing.T) {
+	jsonl := `{"type":"user","message":{"role":"user","content":"real message from me"}}
+{"type":"user","message":{"role":"user","content":"<task-notification>\n<task-id>abc</task-id>\n</task-notification>"}}
+{"type":"user","message":{"role":"user","content":"<system-reminder>be careful</system-reminder>"}}
+{"type":"user","message":{"role":"user","content":"[SYSTEM NOTIFICATION - NOT USER INPUT] a background event"}}
+`
+	out := parseTranscript([]byte(jsonl))
+	if len(out) != 1 {
+		t.Fatalf("expected only the 1 real user message, got %d: %+v", len(out), out)
+	}
+	if out[0].Text != "real message from me" {
+		t.Errorf("kept the wrong turn: %+v", out[0])
+	}
+}
+
+// Real AskUserQuestion picker layout (captured from a live Claude agent).
+func TestParseChoices(t *testing.T) {
+	read := "❯ Use your AskUserQuestion tool to ask 'Which fruit?'\n" +
+		"─────────────────────────────────────────\n" +
+		" ☐ Fruit\n" +
+		"\n" +
+		"Which fruit?\n" +
+		"\n" +
+		"❯ 1. Apple\n" +
+		"     A crisp, common orchard fruit.\n" +
+		"  2. Banana\n" +
+		"     A soft, yellow tropical fruit.\n" +
+		"  3. Cherry\n" +
+		"     A small, red stone fruit.\n" +
+		"  4. Date\n" +
+		"     A sweet, chewy fruit from date palms.\n" +
+		"  5. Type something.\n" +
+		"─────────────────────────────────────────\n" +
+		"  6. Chat about this\n" +
+		"\n" +
+		"Enter to select · ↑/↓ to navigate · Esc to cancel\n"
+
+	q, opts, ok := parseChoices(read)
+	if !ok {
+		t.Fatal("expected a picker to be detected")
+	}
+	if q != "Which fruit?" {
+		t.Errorf("question = %q, want %q", q, "Which fruit?")
+	}
+	want := []choice{
+		{1, "Apple", true}, {2, "Banana", false}, {3, "Cherry", false},
+		{4, "Date", false}, {5, "Type something.", false}, {6, "Chat about this", false},
+	}
+	if len(opts) != len(want) {
+		t.Fatalf("got %d options, want %d: %+v", len(opts), len(want), opts)
+	}
+	for i, w := range want {
+		if opts[i] != w {
+			t.Errorf("option %d = %+v, want %+v", i, opts[i], w)
+		}
+	}
+
+	// non-picker terminal text → not a picker
+	if _, _, ok := parseChoices("$ ls\nfile1  file2\n$ "); ok {
+		t.Error("plain terminal text should not parse as a picker")
+	}
+}
+
 func TestParseTranscript(t *testing.T) {
 	jsonl := `{"type":"user","message":{"role":"user","content":"hello there"}}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi back"},{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}
