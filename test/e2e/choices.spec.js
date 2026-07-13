@@ -36,25 +36,29 @@ test("a blocked picker renders tappable options; tapping sends the digit", async
   await expect(page.locator(".keys .hint")).toContainText(/waiting/i);
 });
 
-function picker(question, opts) {
-  const lines = [" ☐ Q", "", question, ""];
+function picker(question, opts, tabs) {
+  const lines = [question, ""];
   opts.forEach((o, i) => { lines.push((i === 0 ? "❯ " : "  ") + (i + 1) + ". " + o, "     a description"); });
-  lines.push("  " + (opts.length + 1) + ". Chat about this", "", "Enter to select · ↑/↓ to navigate · Esc to cancel");
+  lines.push("  " + (opts.length + 1) + ". Chat about this");
+  if (tabs) lines.push("←  " + tabs + "  ✔ Submit  →"); // multi-part tab bar
+  lines.push("", "Enter to select · ↑/↓ to navigate · Esc to cancel");
   return lines.join("\n");
 }
 
-test("multi-part: after answering one question, the next one is answerable", async ({ page }) => {
-  env.patchState({ read: { "w3:p1": picker("Which fruit?", ["Apple", "Banana"]) } });
+test("multi-part: next question is answerable + shows N of M", async ({ page }) => {
+  env.patchState({ read: { "w3:p1": picker("Which fruit?", ["Apple", "Banana"], "☐ Fruit  ☐ Color") } });
   await page.goto("/");
   await page.locator('[data-pane="w3:p1"]').click();
   await expect(page.locator(".keys .permh")).toContainText("Which fruit?");
+  await expect(page.locator(".keys .permh")).toContainText("question 1 of 2");
 
   await page.locator(".permbtns.choices .key", { hasText: "Apple" }).click();
   await expect(page.locator(".permbtns.choices .key", { hasText: "Banana" })).toBeDisabled(); // chosen → greyed
 
-  // agent advances to part 2 (the terminal now shows the next question)
-  env.patchState({ read: { "w3:p1": picker("Which color?", ["Red", "Blue"]) } });
+  // agent advances to part 2 (Fruit now answered ☒, Color pending ☐)
+  env.patchState({ read: { "w3:p1": picker("Which color?", ["Red", "Blue"], "☒ Fruit  ☐ Color") } });
   await expect(page.locator(".keys .permh")).toContainText("Which color?");
+  await expect(page.locator(".keys .permh")).toContainText("question 2 of 2");
   await expect(page.locator(".permbtns.choices .key", { hasText: "Red" })).toBeEnabled(); // re-enabled, not stuck greyed
   await page.locator(".permbtns.choices .key", { hasText: "Blue" }).click();
   await expect.poll(() => env.readSendlog()).toMatch(/SENDKEYS\tw3:p1\t2/); // Blue = option 2

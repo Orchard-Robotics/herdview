@@ -565,7 +565,7 @@
     const [data, setData] = useState({ mode:"loading", msgs:null, readText:"" });
     const [showRun, setShowRun] = useState(false);
     const [preview, setPreview] = useState("…");
-    const [choices, setChoices] = useState({ question:"", options:[] });
+    const [choices, setChoices] = useState({ question:"", options:[], index:0, total:0 });
     const [chosen, setChosen] = useState(null);   // option the user tapped (optimistic, until the picker clears)
     const [artifacts, setArtifacts] = useState(() => loadArtifacts(session, pane));
     const [, setTick] = useState(0);     // drives elapsed/preview refresh each poll
@@ -613,7 +613,7 @@
     // disappearing) reset the optimistic selection so the next part is answerable.
     const pickerSig = useRef("");
     useEffect(() => {
-      if(status !== "blocked"){ setChoices({ question:"", options:[] }); setChosen(null); pickerSig.current = ""; return; }
+      if(status !== "blocked"){ setChoices({ question:"", options:[], index:0, total:0 }); setChosen(null); pickerSig.current = ""; return; }
       let alive = true;
       async function tick(){
         try{
@@ -764,7 +764,7 @@
       <div class="keys" id="keys">
         ${status === "blocked" ? (choices.options && choices.options.length ? html`
           <div class="permcard">
-            <div class="permh">⏸ ${choices.question || "Choose an option"}</div>
+            <div class="permh">⏸ ${choices.question || "Choose an option"}${choices.total > 1 ? ` · question ${choices.index} of ${choices.total}` : ""}</div>
           </div>
           <div class="permbtns choices">
             ${choices.options.map(o => html`

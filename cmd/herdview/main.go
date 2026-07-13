@@ -69,6 +69,16 @@ func guard(next http.Handler) http.Handler {
 	})
 }
 
+// noCache stops the browser caching the embedded UI, so a redeploy is always
+// picked up on reload (the assets carry no ETag from embed.FS, and a fast-moving
+// dev tool serving a stale index.html is a real trap).
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store, must-revalidate")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // herdrBin resolves the herdr executable. herdr injects HERDR_BIN_PATH into
 // plugin processes; outside a plugin context we fall back to PATH.
 func herdrBin() string {
@@ -378,8 +388,31 @@ func handleChoices(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		opts = []choice{}
 	}
+	index, total := parseProgress(string(out)) // multi-part: which question of how many
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"question": question, "options": opts})
+	_ = json.NewEncoder(w).Encode(map[string]any{"question": question, "options": opts, "index": index, "total": total})
+}
+
+// parseProgress reads the multi-question tab bar (e.g. "☒ Fruit  ☐ Color") that
+// Claude shows for a multi-part AskUserQuestion, returning the current question
+// number and the total. Returns 0,0 for a single-question prompt (no tab bar).
+func parseProgress(read string) (index, total int) {
+	for _, ln := range strings.Split(read, "\n") {
+		if !strings.ContainsAny(ln, "☐☒") { // ☐ ☒
+			continue
+		}
+		done := strings.Count(ln, "☒") // ☒ answered
+		pend := strings.Count(ln, "☐") // ☐ pending
+		if done+pend >= 2 {                 // a real multi-question tab bar
+			total = done + pend
+			index = done + 1
+			if index > total {
+				index = total
+			}
+			return
+		}
+	}
+	return 0, 0
 }
 
 // ---- pane → transcript mapping (populated by the `herdview hook` Claude hook) ----
@@ -888,7 +921,7 @@ func main() {
 	mux.HandleFunc("/api/pane/rename", handleRename)
 	mux.HandleFunc("/api/worktree", handleNewWorktree)
 	mux.HandleFunc("/api/agent", handleNewAgent)
-	mux.Handle("/", http.FileServer(http.FS(web.FS)))
+	mux.Handle("/", noCache(http.FileServer(http.FS(web.FS))))
 
 	// Allowed request hosts: loopback + the bind host, plus any extras from
 	// HERDVIEW_ALLOW_HOSTS (e.g. a tailnet name/IP if you bind there).

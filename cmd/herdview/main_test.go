@@ -137,6 +137,23 @@ func TestParseChoices(t *testing.T) {
 	}
 }
 
+func TestParseProgress(t *testing.T) {
+	// multi-part tab bar: Fruit answered (☒), Color pending (☐) → question 2 of 2
+	multi := "❯ q\n←  ☒ Fruit  ☐ Color  ✔ Submit  →\nEnter to select · ↑/↓ to navigate · Esc to cancel\n"
+	if i, tot := parseProgress(multi); i != 2 || tot != 2 {
+		t.Errorf("multi-part: got %d/%d, want 2/2", i, tot)
+	}
+	// first part of three, none answered → 1 of 3
+	first := "←  ☐ A  ☐ B  ☐ C  ✔ Submit  →\n"
+	if i, tot := parseProgress(first); i != 1 || tot != 3 {
+		t.Errorf("first-of-three: got %d/%d, want 1/3", i, tot)
+	}
+	// single question (no tab bar) → 0/0
+	if i, tot := parseProgress("Which fruit?\n❯ 1. Apple\nEnter to select"); i != 0 || tot != 0 {
+		t.Errorf("single question: got %d/%d, want 0/0", i, tot)
+	}
+}
+
 func TestParseTranscript(t *testing.T) {
 	jsonl := `{"type":"user","message":{"role":"user","content":"hello there"}}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi back"},{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}
