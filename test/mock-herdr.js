@@ -47,9 +47,18 @@ if (a === "pane" && b === "process-info") {
   process.exit(0);
 }
 if (a === "agent" && b === "rename") { process.exit(0); }
-if (a === "worktree" && b === "create") { out({ result: { ok: true } }); process.exit(0); }
-if (a === "tab" && b === "create") { out({ result: { ok: true } }); process.exit(0); }
-if (a === "pane" && b === "run") { process.exit(0); }
+if (a === "worktree" && b === "create") {
+  const ci = args.indexOf("--cwd"), bi = args.indexOf("--branch");
+  record("WORKTREE\t" + (ci >= 0 ? args[ci + 1] : "") + "\t" + (bi >= 0 ? args[bi + 1] : ""));
+  // configurable result; default includes a root_pane so `pane run` fires
+  const wt = ("worktreeResult" in s)
+    ? s.worktreeResult
+    : { root_pane: { pane_id: "w9:p1" }, worktree: { path: "/tmp/wt/" + (bi >= 0 ? args[bi + 1] : "x") } };
+  out({ result: wt || {} });
+  process.exit(0);
+}
+if (a === "tab" && b === "create") { record("TABCREATE\t" + (args.indexOf("--cwd") >= 0 ? args[args.indexOf("--cwd") + 1] : "")); out({ result: { root_pane: { pane_id: "w9:p2" } } }); process.exit(0); }
+if (a === "pane" && b === "run") { record("PANERUN\t" + args[2] + "\t" + args.slice(3).join(" ")); process.exit(0); }
 
 // unknown subcommand -> empty success
 process.exit(0);
