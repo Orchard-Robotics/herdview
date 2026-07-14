@@ -173,6 +173,14 @@
   .bubble pre.md-code, .bubble pre.md-code code{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;}
   .bubble pre.md-code code{background:none;border:none;padding:0;font-size:.8em;display:block;}
   .msg.user .bubble code,.msg.user .bubble pre.md-code{background:rgba(255,255,255,.15);border-color:rgba(255,255,255,.3);}
+  .bubble .md-table-wrap{max-width:100%;overflow-x:auto;margin:.45rem 0;-webkit-overflow-scrolling:touch;}
+  .bubble .md-table{border-collapse:collapse;font-size:.82em;line-height:1.35;}
+  .bubble .md-table th,.bubble .md-table td{border:1px solid var(--border);padding:.28rem .55rem;text-align:left;vertical-align:top;white-space:nowrap;}
+  .bubble .md-table th{font-weight:650;background:var(--surface-2);}
+  .bubble .md-table tbody tr:nth-child(even) td{background:color-mix(in srgb,var(--surface-2) 45%,transparent);}
+  .bubble .md-table td:not(:first-child),.bubble .md-table th:not(:first-child){font-variant-numeric:tabular-nums;}
+  .msg.user .bubble .md-table th,.msg.user .bubble .md-table td{border-color:rgba(255,255,255,.3);}
+  .msg.user .bubble .md-table th,.msg.user .bubble .md-table tbody tr:nth-child(even) td{background:rgba(255,255,255,.12);}
   .tools{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem;}
   .toolchip{font-family:var(--mono);font-size:.63rem;background:var(--surface-2);border:1px solid var(--border);
     color:var(--muted);border-radius:6px;padding:.12rem .4rem;}
@@ -317,6 +325,20 @@
       if(last < seg.length) mdEmph(parent, seg.slice(last));
     });
   }
+  // GFM table helpers. splitRow drops the outer pipes and returns trimmed cells;
+  // isDelim recognises the `|---|:--:|` separator row that turns the line above it
+  // into a table header (a lone `-` cell is still a valid single-column delimiter).
+  function splitRow(line){
+    let s = line.trim();
+    if(s.startsWith("|")) s = s.slice(1);
+    if(s.endsWith("|")) s = s.slice(0, -1);
+    return s.split("|").map(c => c.trim());
+  }
+  function isDelim(line){
+    if(!line || line.indexOf("-") < 0) return false;
+    const cells = splitRow(line);
+    return cells.length > 0 && cells.every(c => /^:?-+:?$/.test(c));
+  }
   function renderMarkdown(parent, text){
     const lines = (text || "").split("\n");
     let i = 0, list = null;
@@ -330,6 +352,29 @@
         const pre = document.createElement("pre"); pre.className = "md-code";
         const code = document.createElement("code"); code.textContent = buf.join("\n");
         pre.appendChild(code); parent.appendChild(pre); continue;
+      }
+      if(line.indexOf("|") >= 0 && i+1 < lines.length && isDelim(lines[i+1])){   // GFM table
+        closeList();
+        const header = splitRow(line);
+        const aligns = splitRow(lines[i+1]).map(c => {
+          const l = c.startsWith(":"), r = c.endsWith(":");
+          return l && r ? "center" : r ? "right" : l ? "left" : "";
+        });
+        i += 2;
+        const body = [];
+        while(i < lines.length && lines[i].trim() !== "" && lines[i].indexOf("|") >= 0){ body.push(splitRow(lines[i])); i++; }
+        const wrap = document.createElement("div"); wrap.className = "md-table-wrap";
+        const table = document.createElement("table"); table.className = "md-table";
+        const thead = document.createElement("thead"); const htr = document.createElement("tr");
+        header.forEach((h, ci) => { const th = document.createElement("th"); if(aligns[ci]) th.style.textAlign = aligns[ci]; mdInline(th, h); htr.appendChild(th); });
+        thead.appendChild(htr); table.appendChild(thead);
+        const tbody = document.createElement("tbody");
+        body.forEach(r => {
+          const tr = document.createElement("tr");
+          for(let ci = 0; ci < header.length; ci++){ const td = document.createElement("td"); if(aligns[ci]) td.style.textAlign = aligns[ci]; mdInline(td, r[ci] ?? ""); tr.appendChild(td); }
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody); wrap.appendChild(table); parent.appendChild(wrap); continue;
       }
       const hd = line.match(/^(#{1,6})\s+(.*)$/);
       if(hd){ closeList(); const d = document.createElement("div"); d.className = "md-h"; mdInline(d, hd[2]); parent.appendChild(d); i++; continue; }
