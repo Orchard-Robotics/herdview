@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +103,29 @@ func TestHostAllowed(t *testing.T) {
 	allowHosts["*"] = true // wildcard disables the check
 	if !hostAllowed("evil.com") {
 		t.Error(`HERDVIEW_ALLOW_HOSTS="*" should allow any host`)
+	}
+}
+
+// TestConfigDirFromEnviron covers per-process Claude config-dir resolution — the
+// shared-account case where agents set CLAUDE_CONFIG_DIR=~/.claude-<name>.
+func TestConfigDirFromEnviron(t *testing.T) {
+	nul := func(kvs ...string) []byte { return []byte(strings.Join(kvs, "\x00") + "\x00") }
+	def := "/home/me/.claude"
+	cases := []struct {
+		name string
+		env  []byte
+		want string
+	}{
+		{"set", nul("PATH=/bin", "CLAUDE_CONFIG_DIR=/home/beckett/.claude-achyut", "TERM=xterm"), "/home/beckett/.claude-achyut"},
+		{"absent", nul("PATH=/bin", "HOME=/home/me"), def},
+		{"empty", nul("CLAUDE_CONFIG_DIR="), def},
+		{"multi first wins", nul("CLAUDE_CONFIG_DIR=/a/.claude,/b/.claude"), "/a/.claude"},
+		{"no false prefix match", nul("XCLAUDE_CONFIG_DIR=/nope", "CLAUDE_CONFIG_DIRX=/nope"), def},
+	}
+	for _, c := range cases {
+		if got := configDirFromEnviron(c.env, def); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
 	}
 }
 

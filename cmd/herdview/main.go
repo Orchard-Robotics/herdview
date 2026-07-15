@@ -772,25 +772,63 @@ func parseTranscript(data []byte) []uiMsg {
 
 // ---- hook-free pane → transcript resolution ----
 //
-// Claude writes ~/.claude/sessions/<pid>.json (sessionId + cwd) for each running
-// session. herdr gives us a pane's PID, so we can resolve the transcript with no
-// Claude hook and no config edits: pane → pid → sessions file → transcript.
+// Claude writes <config>/sessions/<pid>.json (sessionId + cwd) for each running
+// session, where <config> is CLAUDE_CONFIG_DIR (default ~/.claude). herdr gives us
+// a pane's PID, so we resolve the transcript hook-free: pane → pid → sessions file
+// → transcript. On a shared account, developers isolate Claude with a per-process
+// CLAUDE_CONFIG_DIR (e.g. ~/.claude-alice), so we read each pane process's own env
+// rather than assuming ~/.claude — otherwise every pane falls back to raw terminal.
 
 type sessionFile struct {
 	SessionID string `json:"sessionId"`
 	Cwd       string `json:"cwd"`
 }
 
-func readSessionFile(pid int) (sessionFile, bool) {
-	b, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".claude", "sessions", strconv.Itoa(pid)+".json"))
+// claudeConfigDir returns the Claude config dir a process uses: its own
+// CLAUDE_CONFIG_DIR (read from /proc/<pid>/environ on Linux), else ~/.claude.
+// (macOS has no /proc, so it falls back to the default there — fine, the
+// shared-account setup this targets is Linux.)
+func claudeConfigDir(pid int) string {
+	def := filepath.Join(os.Getenv("HOME"), ".claude")
+	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "environ"))
 	if err != nil {
-		return sessionFile{}, false
+		return def
+	}
+	return configDirFromEnviron(b, def)
+}
+
+// configDirFromEnviron extracts CLAUDE_CONFIG_DIR from a NUL-separated /proc
+// environ blob, returning def when it's absent or empty. If it holds multiple
+// comma-separated dirs, the first (Claude's primary) is used.
+func configDirFromEnviron(environ []byte, def string) string {
+	for _, kv := range strings.Split(string(environ), "\x00") {
+		if v, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				return def
+			}
+			if i := strings.IndexByte(v, ','); i >= 0 {
+				v = strings.TrimSpace(v[:i])
+			}
+			return v
+		}
+	}
+	return def
+}
+
+// readSessionFile reads <config>/sessions/<pid>.json using pid's own config dir,
+// returning that dir so the transcript is looked up in the same place.
+func readSessionFile(pid int) (sessionFile, string, bool) {
+	dir := claudeConfigDir(pid)
+	b, err := os.ReadFile(filepath.Join(dir, "sessions", strconv.Itoa(pid)+".json"))
+	if err != nil {
+		return sessionFile{}, "", false
 	}
 	var sf sessionFile
 	if json.Unmarshal(b, &sf) != nil || sf.SessionID == "" {
-		return sessionFile{}, false
+		return sessionFile{}, "", false
 	}
-	return sf, true
+	return sf, dir, true
 }
 
 // ppid reads the parent pid from /proc/<pid>/stat (comm can contain spaces, so
@@ -816,10 +854,10 @@ func ppid(pid int) int {
 // paneSession resolves the Claude session running in a pane. The foreground
 // process may be a tool subprocess, so we walk up the process tree to the
 // claude process that owns a sessions file.
-func paneSession(socket, pane string) (sessionFile, bool) {
+func paneSession(socket, pane string) (sessionFile, string, bool) {
 	out, err := runHerdrOn(socket, "pane", "process-info", "--pane", pane)
 	if err != nil {
-		return sessionFile{}, false
+		return sessionFile{}, "", false
 	}
 	var pi struct {
 		Result struct {
@@ -832,7 +870,7 @@ func paneSession(socket, pane string) (sessionFile, bool) {
 		} `json:"result"`
 	}
 	if json.Unmarshal(out, &pi) != nil {
-		return sessionFile{}, false
+		return sessionFile{}, "", false
 	}
 	seeds := []int{}
 	for _, f := range pi.Result.ProcessInfo.Fg {
@@ -841,19 +879,20 @@ func paneSession(socket, pane string) (sessionFile, bool) {
 	seeds = append(seeds, pi.Result.ProcessInfo.ShellPID)
 	for _, pid := range seeds {
 		for p, hops := pid, 0; p > 1 && hops < 8; hops++ {
-			if sf, ok := readSessionFile(p); ok {
-				return sf, true
+			if sf, dir, ok := readSessionFile(p); ok {
+				return sf, dir, true
 			}
 			p = ppid(p)
 		}
 	}
-	return sessionFile{}, false
+	return sessionFile{}, "", false
 }
 
-// findTranscript locates a session's JSONL under ~/.claude/projects (session ids
-// are unique, so a glob avoids depending on Claude's dir-slug rules).
-func findTranscript(sessionID string) string {
-	m, _ := filepath.Glob(filepath.Join(os.Getenv("HOME"), ".claude", "projects", "*", sessionID+".jsonl"))
+// findTranscript locates a session's JSONL under <config>/projects (session ids
+// are unique, so a glob avoids depending on Claude's dir-slug rules). configDir
+// is the same config dir the sessions file was found in.
+func findTranscript(configDir, sessionID string) string {
+	m, _ := filepath.Glob(filepath.Join(configDir, "projects", "*", sessionID+".jsonl"))
 	if len(m) > 0 {
 		return m[0]
 	}
@@ -868,9 +907,9 @@ func handleTranscript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var tpath, sid string
-	if sf, ok := paneSession(socket, pane); ok { // hook-free primary path
+	if sf, dir, ok := paneSession(socket, pane); ok { // hook-free primary path
 		sid = sf.SessionID
-		tpath = findTranscript(sf.SessionID)
+		tpath = findTranscript(dir, sf.SessionID)
 	}
 	if tpath == "" { // fallback: legacy hook-populated map, if present
 		if raw, err := os.ReadFile(mapPath(pane)); err == nil {

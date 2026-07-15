@@ -130,10 +130,13 @@ herdview steers terminals, so treat the port as sensitive.
 ## Structured chat bubbles (no setup)
 
 The chat view renders Claude's own JSONL transcript instead of the terminal.
-herdr exposes each pane's **PID**, and Claude writes `~/.claude/sessions/<pid>.json`
+herdr exposes each pane's **PID**, and Claude writes `<config>/sessions/<pid>.json`
 (with `sessionId` + `cwd`) for every running session — so herdview resolves
 **pane → PID → session → transcript with no Claude hook and no config edits.**
 It walks the process tree, so it still works while the agent is mid tool-run.
+`<config>` is each pane process's own `CLAUDE_CONFIG_DIR` (default `~/.claude`),
+so it works on **shared accounts** where developers isolate Claude with per-user
+config dirs (e.g. `~/.claude-alice`).
 
 If it can't resolve a pane, it falls back to the raw terminal read. (A legacy
 `herdview hook` that writes an explicit pane→transcript map is still honored as a
