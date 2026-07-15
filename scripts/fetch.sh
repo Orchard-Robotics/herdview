@@ -76,6 +76,13 @@ chmod +x "$tmpbin"
 mv -f "$tmpbin" herdview
 echo "herdview: installed ./herdview ($asset, checksum verified)"
 
+# Start the mirror now, so `herdr plugin install` alone brings herdview up with no
+# manual step. --detach is idempotent and returns immediately (so it can't block
+# or fail the install), and the pane.focused event hook re-ensures it later. The
+# build env is scrubbed of HERDR_* vars, so hand the server the herdr binary path
+# explicitly; it falls back to `herdr` on PATH if that's empty.
+HERDR_BIN_PATH="$(command -v herdr 2>/dev/null || true)" ./herdview --detach || true
+
 # --- Moshi host agent (optional) ---
 # The Moshi phone app detects hosted apps via a moshi-hook daemon on this host.
 # A plugin install must not silently install third-party software, so: if

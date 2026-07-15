@@ -36,6 +36,35 @@ func TestHostOnly(t *testing.T) {
 	}
 }
 
+// TestHostAllowed covers the default-open-bind guard: loopback, this box's own
+// hostname (bare + FQDN), and private/tailnet IPs pass; public domains/IPs don't.
+func TestHostAllowed(t *testing.T) {
+	oldAH, oldMH := allowHosts, machineHost
+	allowHosts, machineHost = map[string]bool{}, "solo"
+	defer func() { allowHosts, machineHost = oldAH, oldMH }()
+
+	allow := []string{
+		"127.0.0.1", "127.0.0.1:8848", "::1", "[::1]:8848",
+		"10.0.0.5", "192.168.1.20", "172.16.3.4:8848", "100.100.1.1", // 100.64/10 tailnet
+		"solo", "solo:8848", "solo.tailnet.ts.net", "SOLO", // hostname, FQDN, case-insensitive
+	}
+	for _, h := range allow {
+		if !hostAllowed(h) {
+			t.Errorf("expected %q to be allowed", h)
+		}
+	}
+	deny := []string{"evil.com", "attacker.example:8848", "8.8.8.8", "1.2.3.4:8848", "notsolo", "solobar"}
+	for _, h := range deny {
+		if hostAllowed(h) {
+			t.Errorf("expected %q to be denied", h)
+		}
+	}
+	allowHosts["*"] = true // wildcard disables the check
+	if !hostAllowed("evil.com") {
+		t.Error(`HERDVIEW_ALLOW_HOSTS="*" should allow any host`)
+	}
+}
+
 // TestGuard covers the DNS-rebinding (Host) and CSRF (Origin) defenses.
 func TestGuard(t *testing.T) {
 	old := allowHosts

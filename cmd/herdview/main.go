@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/orchard-robotics/herdview/web"
@@ -33,8 +34,17 @@ import (
 // herdr workspace/pane ids are alphanumeric (e.g. w1:p2, wE:p3), not just digits.
 var paneRe = regexp.MustCompile(`^w[0-9A-Za-z]+:p[0-9A-Za-z]+$`)
 
-// allowHosts is the set of hostnames requests may carry (populated in main).
+// allowHosts holds extra explicitly-permitted hostnames from HERDVIEW_ALLOW_HOSTS
+// ("*" disables the host check entirely). loopback, this box's hostname, and
+// private/tailnet IPs are always allowed by hostAllowed without being listed here.
 var allowHosts = map[string]bool{}
+
+// machineHost is this box's own hostname (lower-cased) — allowed so you can reach
+// herdview by name (e.g. http://solo:8848) over the tailnet/LAN.
+var machineHost = func() string { h, _ := os.Hostname(); return strings.ToLower(h) }()
+
+// cgnat is Tailscale's 100.64.0.0/10 range (not covered by IP.IsPrivate).
+var _, cgnat, _ = net.ParseCIDR("100.64.0.0/10")
 
 func hostOnly(hostport string) string {
 	if h, _, err := net.SplitHostPort(hostport); err == nil {
@@ -43,25 +53,43 @@ func hostOnly(hostport string) string {
 	return hostport
 }
 
-// guard is defense-in-depth for a loopback server that steers terminals: a
-// Host allowlist blocks DNS-rebinding, and an Origin allowlist blocks cross-site
-// POSTs (CSRF). It adds no login friction — same-origin/loopback traffic passes.
+// hostAllowed is the DNS-rebinding guard for a server that binds all interfaces
+// by default and steers terminals. It accepts loopback, this box's own hostname
+// (bare or as an FQDN prefix, e.g. solo / solo.tailnet.ts.net), and private/
+// tailnet IP literals (RFC-1918 + CGNAT 100.64/10) — the addresses a phone on
+// your LAN or tailnet actually uses — while rejecting arbitrary public domains.
+// HERDVIEW_ALLOW_HOSTS adds explicit names, and "*" disables the check entirely.
+func hostAllowed(h string) bool {
+	if allowHosts["*"] {
+		return true
+	}
+	h = strings.ToLower(hostOnly(h))
+	if allowHosts[h] {
+		return true
+	}
+	if machineHost != "" && (h == machineHost || strings.HasPrefix(h, machineHost+".")) {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate() || (cgnat != nil && cgnat.Contains(ip))
+	}
+	return false
+}
+
+// guard is defense-in-depth for a server that steers terminals: the Host check
+// blocks DNS-rebinding and the Origin check blocks cross-site POSTs (CSRF). It
+// adds no login friction — loopback / same-host / tailnet traffic passes.
 func guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// HERDVIEW_ALLOW_HOSTS="*" opts out of the allowlist entirely — for a
-		// tailnet-gated instance where you accept any Host/Origin and rely on the
-		// network layer for access control. Weakens DNS-rebinding/CSRF defenses.
-		if !allowHosts["*"] {
-			if !allowHosts[hostOnly(r.Host)] {
-				http.Error(w, "forbidden host", http.StatusForbidden)
-				return
-			}
-			if r.Method != http.MethodGet && r.Method != http.MethodHead {
-				if o := r.Header.Get("Origin"); o != "" {
-					if u, err := url.Parse(o); err != nil || !allowHosts[u.Hostname()] {
-						http.Error(w, "forbidden origin", http.StatusForbidden)
-						return
-					}
+		if !hostAllowed(r.Host) {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if o := r.Header.Get("Origin"); o != "" {
+				if u, err := url.Parse(o); err != nil || !hostAllowed(u.Hostname()) {
+					http.Error(w, "forbidden origin", http.StatusForbidden)
+					return
 				}
 			}
 		}
@@ -485,6 +513,12 @@ func handleTasks(w http.ResponseWriter, r *http.Request) {
 func stateDir() string {
 	if d := os.Getenv("HERDVIEW_STATE_DIR"); d != "" {
 		return d
+	}
+	if d := os.Getenv("HERDR_PLUGIN_STATE_DIR"); d != "" { // herdr-provided (runtime cmds)
+		return d
+	}
+	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
+		return filepath.Join(d, "herdview")
 	}
 	return filepath.Join(os.Getenv("HOME"), ".local", "state", "herdview")
 }
@@ -968,9 +1002,18 @@ func main() {
 		return
 	}
 
-	addr := flag.String("addr", envOr("HERDVIEW_ADDR", "127.0.0.1:8848"),
-		"listen address (default loopback; set a tailnet address to reach it over Tailscale)")
+	addr := flag.String("addr", envOr("HERDVIEW_ADDR", "0.0.0.0:8848"),
+		"listen address (default all interfaces so it's reachable over your tailnet/LAN)")
+	detach := flag.Bool("detach", false,
+		"start the server as a detached background process (idempotent) and exit")
 	flag.Parse()
+
+	if *detach {
+		if err := ensureDetached(*addr); err != nil {
+			log.Fatalf("herdview --detach: %v", err)
+		}
+		return
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/agents", handleAgents)
@@ -985,13 +1028,10 @@ func main() {
 	mux.HandleFunc("/api/agent", handleNewAgent)
 	mux.Handle("/", noCache(http.FileServer(http.FS(web.FS))))
 
-	// Allowed request hosts: loopback + the bind host, plus any extras from
-	// HERDVIEW_ALLOW_HOSTS (e.g. a tailnet name/IP if you bind there).
-	for _, h := range []string{"localhost", "127.0.0.1", "::1", hostOnly(*addr)} {
-		allowHosts[h] = true
-	}
+	// loopback, this box's hostname, and private/tailnet IPs are always allowed
+	// (see hostAllowed); HERDVIEW_ALLOW_HOSTS adds explicit names, "*" disables.
 	for _, h := range strings.Split(os.Getenv("HERDVIEW_ALLOW_HOSTS"), ",") {
-		if h = strings.TrimSpace(h); h != "" {
+		if h = strings.TrimSpace(strings.ToLower(h)); h != "" {
 			allowHosts[h] = true
 		}
 	}
@@ -1002,6 +1042,92 @@ func main() {
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}
-	fmt.Printf("herdview → http://%s  (herdr: %s)\n", *addr, herdrBin())
+	reach := *addr
+	if h := hostOnly(*addr); h == "0.0.0.0" || h == "::" || h == "" {
+		_, port, _ := net.SplitHostPort(*addr)
+		reach = net.JoinHostPort(orDefault(machineHost, "127.0.0.1"), port) // reachable by name over the tailnet/LAN
+	}
+	fmt.Printf("herdview → http://%s  (herdr: %s)\n", reach, herdrBin())
 	log.Fatal(srv.ListenAndServe())
+}
+
+// orDefault returns s, or def when s is empty.
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+// portListening reports whether something already accepts connections on addr's
+// port (checked on loopback, which a 0.0.0.0 bind also covers).
+func portListening(addr string) bool {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", port), 300*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
+}
+
+// ensureDetached starts the server as a detached background process, idempotently.
+// It no-ops if one is already serving (a live pidfile process, or anything already
+// listening on the port), and returns fast — so it's safe to call from the install
+// build step and from a high-frequency pane-focus event hook. The child is a fresh
+// session (setsid) with its stdio redirected to a logfile, so it survives both the
+// launching shell and herdr exiting, and never holds one of herdr's command slots.
+func ensureDetached(addr string) error {
+	dir := stateDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	// Serialize concurrent launches — several focus events can fire at once.
+	lf, err := os.OpenFile(filepath.Join(dir, "detach.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer lf.Close()
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return nil // another launcher holds the lock; it's handling startup
+	}
+	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+
+	// Already running? (live pidfile process, or the port is already accepting)
+	pidPath := filepath.Join(dir, "herdview.pid")
+	if b, err := os.ReadFile(pidPath); err == nil {
+		if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 0 {
+			if p, err := os.FindProcess(pid); err == nil && p.Signal(syscall.Signal(0)) == nil {
+				return nil
+			}
+		}
+	}
+	if portListening(addr) {
+		return nil
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	logf, err := os.OpenFile(filepath.Join(dir, "herdview.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer logf.Close()
+	cmd := exec.Command(exe, "--addr", addr)
+	cmd.Stdout, cmd.Stderr = logf, logf
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // new session: detach from the launcher + herdr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	pid := cmd.Process.Pid // capture before Release() (which resets it to -1)
+	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0o644)
+	_ = cmd.Process.Release()
+	fmt.Printf("herdview: started detached (pid %d) on %s\n", pid, addr)
+	return nil
 }

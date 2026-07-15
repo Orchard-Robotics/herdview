@@ -17,8 +17,11 @@ no runtime for users to install.
 
 ```sh
 herdr plugin install Orchard-Robotics/herdview
-herdr plugin pane open --plugin orchard.herdview --entrypoint server
 ```
+
+That's it — **no separate start step.** Installing downloads the binary and
+starts the server, and it re-ensures itself whenever you focus a pane, so it's
+up and reachable at `http://<this-host>:8848` (by tailnet name/IP — see below).
 
 The install step (`scripts/fetch.sh`) downloads the prebuilt binary for your
 OS/arch from this repo's latest [GitHub Release](../../releases), verifies its
@@ -27,9 +30,14 @@ access and `curl` (or `wget`)** — but no Go toolchain, and no auth (the repo i
 public). Binaries are never committed to git; CI builds and publishes them on
 each tagged release.
 
-Then open `http://127.0.0.1:8848` in your terminal app's web preview — or set
-`HERDVIEW_ADDR=<tailnet-ip>:8848` and browse it directly over Tailscale (pass it
-with `--env HERDVIEW_ADDR=…` on the `pane open`).
+To run it in a **visible pane** instead (its lifetime = the server's):
+`herdr plugin pane open --plugin orchard.herdview --entrypoint server`.
+
+> ⚠️ **Reboot caveat:** the server runs as a detached background process, not a
+> system service. It survives your herdr session, but **not a machine reboot** —
+> after a reboot it comes back the next time you interact with a herdr pane (the
+> `pane.focused` event re-starts it), or immediately on a reinstall. A
+> boot-persistent systemd service is on the roadmap.
 
 ### Viewing on the Moshi phone app (optional)
 
@@ -54,12 +62,14 @@ prints a pointer. To link the app to a host, pair once (token from the app):
 
 ## Reaching it from your phone
 
-By default herdview binds to `127.0.0.1:8848` (loopback only). Two ways to view it:
+By default herdview binds **`0.0.0.0:8848`** (all interfaces), so on a machine on
+your tailnet you just browse `http://<host>:8848` — e.g. `http://solo:8848` by its
+MagicDNS name, or its `100.x` tailnet IP. No env, no port-forward. (A terminal
+app's web preview of `localhost:8848` works too.)
 
-- **Terminal-app web preview** — apps that detect local HTTP servers will surface it.
-- **Tailscale** — set `HERDVIEW_ADDR` to a tailnet-reachable address, e.g.
-  `HERDVIEW_ADDR=100.x.y.z:8848`, and allow that host with
-  `HERDVIEW_ALLOW_HOSTS=<host>`. Keep it tailnet-gated; never bind to a public interface.
+Override the bind with `HERDVIEW_ADDR` (e.g. `127.0.0.1:8848` to force loopback).
+The host allowlist auto-accepts loopback, this box's hostname, and private/tailnet
+IPs; add others with `HERDVIEW_ALLOW_HOSTS=host1,host2` (or `*` to disable the check).
 
 ## Develop locally
 
@@ -95,16 +105,22 @@ Run the tests (Go unit + Playwright browser e2e) with `sh scripts/test.sh`.
 
 ## Security
 
-herdview steers terminals, so treat the port as sensitive:
+herdview steers terminals, so treat the port as sensitive.
 
-- Binds **loopback** by default; reach it via an authenticated SSH/mosh port-forward
-  or a tailnet ACL. **Never bind it to a public interface.**
-- A **Host + Origin allowlist** blocks DNS-rebinding and cross-site (CSRF) POSTs
-  even on loopback. If you bind to a tailnet name/IP, allow it with
-  `HERDVIEW_ALLOW_HOSTS=host1,host2` (or `*` to rely purely on network gating).
-- There is **no user login** — anyone who can reach the port (and pass the host
-  check) can read transcripts and steer agents. That's fine behind loopback/SSH;
-  it is *not* a substitute for network gating.
+> ⚠️ **It binds all interfaces (`0.0.0.0`) by default** so it's reachable over
+> your tailnet with zero config. That means anyone who can reach `:8848` on any
+> network the host is attached to — **and there is no login** — can read
+> transcripts and drive your agents. **Only run it on a machine whose network is
+> gated** (a tailnet with ACLs, a trusted LAN, or behind a firewall). On an
+> untrusted network, set `HERDVIEW_ADDR=127.0.0.1:8848` to bind loopback-only and
+> reach it via an SSH/mosh port-forward instead.
+
+- The **Host + Origin allowlist** blocks browser DNS-rebinding / cross-site (CSRF)
+  POSTs: it accepts loopback, this box's hostname, and private/tailnet IPs, and
+  rejects arbitrary public domains. It is **not** authentication — it doesn't stop
+  a direct attacker on a network that can already reach the port.
+- No user login. The allowlist and the network gating are the whole story — size
+  your deployment accordingly.
 
 ## Structured chat bubbles (no setup)
 
@@ -123,7 +139,7 @@ fallback, but is not required.)
 Binaries are distributed via GitHub Releases, built by CI:
 
 ```sh
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 `.github/workflows/release.yml` cross-compiles all four platforms
@@ -140,8 +156,10 @@ is what new installs receive. Build the artifacts by hand with `sh scripts/build
 - [x] **Multi-session view** — aggregate every running herdr session into one
       grid with a session tier, fanning out over each session's socket
 - [x] Multiple-choice answering, task checklist, artifact links, off-tab badge
+- [x] **Auto-start** — `--detach` background launcher started at install and
+      re-ensured on `pane.focused`; reachable over the tailnet by default, no manual step
 - [ ] Approve/deny buttons refined from `herdr agent explain`'s matched blocker
-- [ ] Detached lifecycle (`--detach` / `--stop`) so the server can run without a pane
+- [ ] **Boot-persistent service** (systemd user unit) so it survives a reboot unattended
 
 ## License
 

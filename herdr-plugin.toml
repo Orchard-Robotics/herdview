@@ -10,26 +10,33 @@
 
 id = "orchard.herdview"
 name = "herdview"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.7.3"
 description = "Phone-first web mirror of your herdr session — watch and steer agents from your phone."
 platforms = ["linux", "macos"]
 
-# Fetch the prebuilt binary for this OS/arch from GitHub Releases. End users need
-# no Go toolchain; this runs at (re)install time.
+# Fetch the prebuilt binary for this OS/arch from GitHub Releases, then start the
+# server (detached) so `herdr plugin install` alone brings herdview up — no manual
+# step. Runs at (re)install time. End users need no Go toolchain.
 [[build]]
 command = ["sh", "scripts/fetch.sh"]
 
-# Run the mirror server in a tucked-away pane whose lifetime is the server's.
-# Open it with:  herdr plugin pane open --plugin orchard.herdview --entrypoint server
+# Keep the server up across sessions: pane.focused fires on session bootstrap and
+# on the first interaction after a restore, so this re-ensures a detached server
+# is running (idempotent — a no-op when it already is). This is what removes the
+# manual `pane open`; herdr injects $HERDR_PLUGIN_ROOT for runtime commands.
+[[events]]
+on = "pane.focused"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/herdview\" --detach"]
+
+# Also runnable in a visible, tucked-away pane whose lifetime is the server's:
+#   herdr plugin pane open --plugin orchard.herdview --entrypoint server
 #
 # NOTE: herdr does not run commands through a shell and resolves a bare relative
 # argv[0] (e.g. "./herdview") against $HOME, not the plugin root — so we front
 # with `sh` and exec the binary via the injected $HERDR_PLUGIN_ROOT (available to
-# runtime pane/action commands), which a real shell expands. This is why every
-# example plugin fronts its command with a PATH-resolved interpreter rather than
-# a bare "./binary". A detached start/stop lifecycle is a roadmap item; until
-# then the pane (whose lifetime is the server's) is the supported way to run it.
+# runtime pane/action/event commands), which a real shell expands. Every example
+# plugin fronts its command with a PATH-resolved interpreter, never a bare "./binary".
 [[panes]]
 id = "server"
 title = "herdview server"
