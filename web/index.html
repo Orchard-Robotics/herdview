@@ -783,7 +783,14 @@
 
     let items;
     if(data.mode === "loading"){
-      items = html`<div class="hint">loading…</div>`;
+      // Show persisted pending sends immediately (from localStorage) rather than
+      // hiding them behind the first poll — otherwise a reload on a slow link
+      // blinks a queued-but-unconfirmed message out until the transcript loads.
+      const pend = sentLog.filter(e => now - e.ts < SENT_TTL).map(e => e.t);
+      items = [
+        html`<div class="hint" key="loading">loading…</div>`,
+        ...pend.map((pt, i) => html`<${Bubble} key=${"pl" + i} m=${{ role:"user", text:pt }} pending=${true} />`),
+      ];
     } else if(data.mode === "text"){
       // No structured transcript to reconcile against, so a sent message clears
       // once its text shows up in the terminal output.

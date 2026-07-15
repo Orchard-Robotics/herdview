@@ -46,6 +46,27 @@ test("a pending send survives a browser refresh (delivered-but-unconfirmed isn't
   await expect(page.locator(".msg.user.pending .bubble", { hasText: "queued while working" }).first()).toBeVisible();
 });
 
+// Deterministic guard for the loading-window race (the prior test only caught it
+// under real CI timing): a persisted pending send must render from localStorage
+// immediately on mount, not wait for the first poll to return.
+test("a persisted pending send shows during the post-reload loading window", async ({ page }) => {
+  await page.goto("/");
+  await page.locator('[data-pane="w3:p1"]').click();
+  await page.locator("#msg").fill("queued while working");
+  await page.locator("#sendbtn").click();
+  await expect(page.locator(".msg.user.pending .bubble", { hasText: "queued while working" }).first()).toBeVisible();
+  await expect.poll(() => env.readSendlog()).toContain("queued while working");
+
+  // stall the post-reload poll (slow/loaded link) so the pane stays in "loading"
+  const slow = async (r) => { await new Promise((x) => setTimeout(x, 6000)); await r.continue(); };
+  await page.route("**/api/pane/transcript**", slow);
+  await page.route("**/api/pane/read**", slow);
+
+  await page.reload();
+  await page.locator('[data-pane="w3:p1"]').click();
+  await expect(page.locator(".msg.user.pending .bubble", { hasText: "queued while working" }).first()).toBeVisible({ timeout: 4000 });
+});
+
 test("Shift+Enter sends; plain Enter stays a newline", async ({ page }) => {
   await page.goto("/");
   await page.locator('[data-pane="w3:p1"]').click();
