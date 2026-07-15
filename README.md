@@ -4,9 +4,10 @@ A phone-first web mirror of your [herdr](https://herdr.dev) session.
 
 herdview reflects the agents already running in your herdr session into a
 mobile-friendly web UI — see each agent's state, read its transcript as a chat,
-send input, approve prompts, and Ctrl-C a runaway tool. It **never spawns a new
-agent on its own**: it reads and steers the sessions you already have, so you're
-not creating throwaway "remote-control" sessions just to check in from your phone.
+send input, answer multiple-choice prompts, and drive menus. It **never spawns a
+new agent on its own**: it reads and steers the sessions you already have, so
+you're not creating throwaway "remote-control" sessions just to check in from
+your phone.
 
 It's a herdr **plugin**: a small Go binary that drives the herdr CLI / socket
 (the documented plugin API) and serves an embedded web UI. No Node, no Python,
@@ -14,65 +15,42 @@ no runtime for users to install.
 
 ## Install
 
-herdview ships its prebuilt binaries in the repo (`bin/`), so installing needs
-no download or auth — even from a private repo. The install step also sets up
-**moshi-hook** (the Moshi host agent) so the phone app can detect/forward it.
-
 ```sh
-herdr plugin install <your-org>/herdview                 # needs git read access
+herdr plugin install Orchard-Robotics/herdview
 herdr plugin pane open --plugin orchard.herdview --entrypoint server
 ```
 
-### Choosing the clone protocol (SSH vs HTTPS)
+The install step (`scripts/fetch.sh`) downloads the prebuilt binary for your
+OS/arch from this repo's latest [GitHub Release](../../releases), verifies its
+SHA-256, and places it at `./herdview`. So the install machine needs **network
+access and `curl` (or `wget`)** — but no Go toolchain, and no auth (the repo is
+public). Binaries are never committed to git; CI builds and publishes them on
+each tagged release.
 
-`herdr plugin install` takes an `<owner>/<repo>` shorthand (not a full URL). Under
-the hood it fetches with a **hardcoded HTTPS origin** (`https://github.com/<owner>/<repo>.git`),
-running `git` as a subprocess (`git init` + `remote add` + shallow `fetch`) — there's
-no SSH option or `--protocol` flag on the command line, and it injects no token of
-its own. Because it's a real `git` subprocess, it reads your `~/.gitconfig`, so you
-choose the protocol at the git layer. herdview is a private repo, so the fetch needs
-read access over whichever protocol your machine is set up for:
+Then open `http://127.0.0.1:8848` in your terminal app's web preview — or set
+`HERDVIEW_ADDR=<tailnet-ip>:8848` and browse it directly over Tailscale (pass it
+with `--env HERDVIEW_ADDR=…` on the `pane open`).
 
-- **HTTPS** (the default) — needs a git credential helper or a personal-access
-  token for `github.com`.
-- **SSH** — if your machine authenticates to GitHub with SSH keys instead, tell
-  git to rewrite HTTPS GitHub URLs to SSH once, *before* installing:
+### Viewing on the Moshi phone app (optional)
 
-  ```sh
-  git config --global url."git@github.com:".insteadOf "https://github.com/"
-  ```
-
-  To force the reverse (HTTPS even when a global SSH rewrite is set):
-
-  ```sh
-  git config --global url."https://github.com/".insteadOf "git@github.com:"
-  ```
-
-The rewrite is a standard git setting, so it also applies to any other tooling
-that clones from GitHub on that machine.
-
-Then open `http://127.0.0.1:8848` in Moshi's web-preview — or set
-`HERDVIEW_ADDR=<tailnet-ip>:8848` and browse it directly over Tailscale
-(pass it with `--env HERDVIEW_ADDR=…` on the `pane open`).
-
-On a **shared workstation**, if 8848 is already taken (a coworker's or a stale
-instance), herdview automatically walks to the next free port (8849, 8850, …)
-and prints the URL it chose in the pane — so multiple people coexist without
-colliding or killing each other's processes.
-
-To link the Moshi app to a **new** host, pair once (token from the app):
+herdview works in any browser. If you use the [Moshi](https://getmoshi.app)
+phone app, its in-app detection needs the `moshi-hook` daemon running on the
+host. herdview does **not** install third-party software for you: if `moshi-hook`
+is already present, the install step just ensures its daemon is up; otherwise it
+prints a pointer. To link the app to a host, pair once (token from the app):
 `moshi-hook pair --token <token> --store file`.
-
-The `[[build]]` step (`scripts/fetch.sh`) copies the committed binary for your
-OS/arch to `./herdview`, and best-effort installs moshi-hook + starts its daemon
-(non-fatal if you don't use Moshi). Maintainers rebuild binaries with
-`scripts/build.sh` (requires Go).
 
 ## What you see
 
-A live grid of every agent in the session, **blocked agents sorted to the top**
-("N need you"), each with a state pill and its working directory. Refreshes every
-couple of seconds.
+- A live grid of every agent, **blocked agents sorted to the top** ("N need
+  you"), each with a state pill, working directory, and git branch. Multiple
+  herdr sessions are aggregated — pick a session, then its agents.
+- Tap an agent for its **transcript as chat bubbles** (with markdown, tables,
+  and fenced code), a compose box (Shift+Enter to send), tappable **multiple-choice
+  answers** for `AskUserQuestion`/permission prompts, a **task checklist**, and a
+  side list of any **artifact links** the agent produced.
+- When you switch tabs, the **browser-tab title badges** the count of agents that
+  need you — `(N) herdview` — and clears when you return.
 
 ## Reaching it from your phone
 
@@ -80,7 +58,8 @@ By default herdview binds to `127.0.0.1:8848` (loopback only). Two ways to view 
 
 - **Terminal-app web preview** — apps that detect local HTTP servers will surface it.
 - **Tailscale** — set `HERDVIEW_ADDR` to a tailnet-reachable address, e.g.
-  `HERDVIEW_ADDR=100.x.y.z:8848`. Keep it tailnet-gated; never bind to a public interface.
+  `HERDVIEW_ADDR=100.x.y.z:8848`, and allow that host with
+  `HERDVIEW_ALLOW_HOSTS=<host>`. Keep it tailnet-gated; never bind to a public interface.
 
 ## Develop locally
 
@@ -89,8 +68,10 @@ herdr can load a working directory directly, no build/publish needed:
 ```sh
 go build -o herdview ./cmd/herdview      # requires Go 1.22+ (build-time only)
 herdr plugin link /path/to/herdview      # register this dir as a plugin
-herdr plugin action invoke orchard.herdview.start
+herdr plugin pane open --plugin orchard.herdview --entrypoint server
 ```
+
+Run the tests (Go unit + Playwright browser e2e) with `sh scripts/test.sh`.
 
 ## How it works
 
@@ -104,11 +85,13 @@ herdr plugin action invoke orchard.herdview.start
 
 | Route | Purpose |
 |-------|---------|
-| `GET /api/agents` | live agent grid (state, cwd, focus) |
-| `GET /api/pane/read?pane=ID` | recent output for one pane (text) |
-| `GET /api/pane/transcript?pane=ID` | structured conversation (chat bubbles) when a hook mapping exists; 404 → fall back to read |
-| `POST /api/pane/send?pane=ID` | `{text}` → type + Enter into the pane |
-| `POST /api/pane/key?pane=ID` | `{keys:[...]}` → raw keystrokes (menus) |
+| `GET /api/agents` | live agent grid across all sessions (state, cwd, branch, session) |
+| `GET /api/pane/read?pane=ID&session=S` | recent output for one pane (text) |
+| `GET /api/pane/transcript?pane=ID&session=S` | structured conversation (chat bubbles); 404 → fall back to read |
+| `GET /api/pane/choices?pane=ID&session=S` | parsed multiple-choice prompt, if the pane is sitting on one |
+| `GET /api/pane/tasks?pane=ID&session=S` | parsed task checklist, if present |
+| `POST /api/pane/send?pane=ID&session=S` | `{text}` → type + Enter into the pane |
+| `POST /api/pane/key?pane=ID&session=S` | `{keys:[...]}` → raw keystrokes (menus) |
 
 ## Security
 
@@ -118,7 +101,7 @@ herdview steers terminals, so treat the port as sensitive:
   or a tailnet ACL. **Never bind it to a public interface.**
 - A **Host + Origin allowlist** blocks DNS-rebinding and cross-site (CSRF) POSTs
   even on loopback. If you bind to a tailnet name/IP, allow it with
-  `HERDVIEW_ALLOW_HOSTS=host1,host2`.
+  `HERDVIEW_ALLOW_HOSTS=host1,host2` (or `*` to rely purely on network gating).
 - There is **no user login** — anyone who can reach the port (and pass the host
   check) can read transcripts and steer agents. That's fine behind loopback/SSH;
   it is *not* a substitute for network gating.
@@ -135,22 +118,30 @@ If it can't resolve a pane, it falls back to the raw terminal read. (A legacy
 `herdview hook` that writes an explicit pane→transcript map is still honored as a
 fallback, but is not required.)
 
+## Cutting a release (maintainers)
+
+Binaries are distributed via GitHub Releases, built by CI:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` cross-compiles all four platforms
+(`herdview_{linux,macos}_{amd64,arm64}`), writes `SHA256SUMS`, and publishes the
+Release. `scripts/fetch.sh` pulls from `/releases/latest/`, so the newest release
+is what new installs receive. Build the artifacts by hand with `sh scripts/build.sh`.
+
 ## Roadmap
 
 - [x] Live agent grid with state
 - [x] Tap into an agent: recent output + send a message + menu keys
 - [x] **Structured JSONL transcript** (chat bubbles) — resolved hook-free via
       `~/.claude/sessions/<pid>.json`; no config; falls back to terminal text
+- [x] **Multi-session view** — aggregate every running herdr session into one
+      grid with a session tier, fanning out over each session's socket
+- [x] Multiple-choice answering, task checklist, artifact links, off-tab badge
 - [ ] Approve/deny buttons refined from `herdr agent explain`'s matched blocker
-- [ ] Detached lifecycle (`--detach` / `--stop`) + push updates
-- [ ] **Multi-session view** — one herdview instance currently mirrors a single
-      herdr session (the socket in `HERDR_SOCKET_PATH`; each session is its own
-      server/socket per `herdr session list`). To show every session in one grid:
-      enumerate `herdr session list`, query each session's socket
-      (`herdr --session <name> …` or a per-call `HERDR_SOCKET_PATH`), merge the
-      agents, and add a **session grouping tier** above the existing branch
-      grouping. Until then, run one instance per session on distinct
-      `HERDVIEW_ADDR` ports (default 8848 collides).
+- [ ] Detached lifecycle (`--detach` / `--stop`) so the server can run without a pane
 
 ## License
 
