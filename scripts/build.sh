@@ -1,7 +1,9 @@
 #!/bin/sh
-# Rebuild the committed cross-platform binaries in bin/ after code changes,
-# then commit them. (This repo ships binaries directly so `herdr plugin install`
-# needs no download/auth from the private repo.)
+# Build the cross-platform binaries into bin/ (gitignored). These are NOT
+# committed — distribution is via GitHub Releases: CI runs the same build on a
+# `v*` tag and uploads the artifacts, and scripts/fetch.sh downloads the right
+# one at install time. Run this for local testing or to reproduce a release
+# build by hand.
 set -eu
 cd "$(dirname "$0")/.."
 mkdir -p bin

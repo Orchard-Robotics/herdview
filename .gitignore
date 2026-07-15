@@ -1,6 +1,9 @@
-# runtime copy placed by scripts/fetch.sh at install time.
-# the committed cross-platform binaries live in bin/ and ARE tracked.
+# Compiled binaries are NOT tracked — distribution is via GitHub Releases
+# (built by CI on tag; downloaded by scripts/fetch.sh at install time).
+# /herdview is the runtime copy fetch.sh places at the repo root; bin/ is where
+# scripts/build.sh drops local/release builds.
 /herdview
+bin/
 
 # test harness (dev-only; never part of the plugin distribution)
 test/node_modules/
