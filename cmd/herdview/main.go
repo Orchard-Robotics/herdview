@@ -64,14 +64,28 @@ func hostAllowed(h string) bool {
 		return true
 	}
 	h = strings.ToLower(hostOnly(h))
-	if allowHosts[h] {
-		return true
+	if h == "" {
+		return false
 	}
-	if machineHost != "" && (h == machineHost || strings.HasPrefix(h, machineHost+".")) {
+	if allowHosts[h] {
 		return true
 	}
 	if ip := net.ParseIP(h); ip != nil {
 		return ip.IsLoopback() || ip.IsPrivate() || (cgnat != nil && cgnat.Contains(ip))
+	}
+	// A bare single-label name (no dot) — a LAN / mDNS / Tailscale-MagicDNS short
+	// hostname like "solo" — can't be a public domain (no TLD), so it's not a
+	// DNS-rebinding vector; allow it. (The OS hostname and the tailnet name often
+	// differ, e.g. solo-orin vs solo, so matching only os.Hostname() isn't enough.)
+	if !strings.Contains(h, ".") {
+		return true
+	}
+	// Tailscale MagicDNS FQDNs (only resolvable on-tailnet) and this box's own FQDN.
+	if strings.HasSuffix(h, ".ts.net") {
+		return true
+	}
+	if machineHost != "" && (h == machineHost || strings.HasPrefix(h, machineHost+".")) {
+		return true
 	}
 	return false
 }

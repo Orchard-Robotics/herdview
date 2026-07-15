@@ -84,14 +84,16 @@ func TestHostAllowed(t *testing.T) {
 	allow := []string{
 		"127.0.0.1", "127.0.0.1:8848", "::1", "[::1]:8848",
 		"10.0.0.5", "192.168.1.20", "172.16.3.4:8848", "100.100.1.1", // 100.64/10 tailnet
-		"solo", "solo:8848", "solo.tailnet.ts.net", "SOLO", // hostname, FQDN, case-insensitive
+		"solo", "solo:8848", "solo-orin", "earthquake", "SOLO", // single-label LAN/MagicDNS names (dotless)
+		"solo.tailnet.ts.net", "other.corp.ts.net", // Tailscale MagicDNS FQDNs
 	}
 	for _, h := range allow {
 		if !hostAllowed(h) {
 			t.Errorf("expected %q to be allowed", h)
 		}
 	}
-	deny := []string{"evil.com", "attacker.example:8848", "8.8.8.8", "1.2.3.4:8848", "notsolo", "solobar"}
+	// Public-looking domains and public IPs are rejected (DNS-rebinding guard).
+	deny := []string{"evil.com", "attacker.example:8848", "8.8.8.8", "1.2.3.4:8848", "phish.io"}
 	for _, h := range deny {
 		if hostAllowed(h) {
 			t.Errorf("expected %q to be denied", h)
