@@ -6,7 +6,9 @@ const path = require("path");
 const http = require("http");
 const env = require("./support/env");
 
-const GO = path.join(process.env.HOME, ".local", "go", "bin", "go");
+// Prefer $GO, then this Jetson's Go under ~/.local/go, else `go` on PATH (CI).
+const LOCAL_GO = path.join(process.env.HOME || "", ".local", "go", "bin", "go");
+const GO = process.env.GO || (fs.existsSync(LOCAL_GO) ? LOCAL_GO : "go");
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 function ping() {
