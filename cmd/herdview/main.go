@@ -108,10 +108,25 @@ func noCache(next http.Handler) http.Handler {
 }
 
 // herdrBin resolves the herdr executable. herdr injects HERDR_BIN_PATH into
-// plugin processes; outside a plugin context we fall back to PATH.
+// runtime plugin processes; it's stripped from install-time build commands, and
+// $PATH itself can be unusable — the cameras carry a literal, unexpanded
+// "~/.local/bin" entry that never resolves — so fall back to a PATH lookup and
+// then the usual install locations before giving up on a bare "herdr".
 func herdrBin() string {
 	if p := os.Getenv("HERDR_BIN_PATH"); p != "" {
 		return p
+	}
+	if p, err := exec.LookPath("herdr"); err == nil {
+		return p
+	}
+	for _, p := range []string{
+		filepath.Join(os.Getenv("HOME"), ".local", "bin", "herdr"),
+		"/usr/local/bin/herdr",
+		"/usr/bin/herdr",
+	} {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Mode()&0o111 != 0 {
+			return p
+		}
 	}
 	return "herdr"
 }

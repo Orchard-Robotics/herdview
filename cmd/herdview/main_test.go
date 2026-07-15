@@ -3,8 +3,46 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+// TestHerdrBin covers herdr resolution when HERDR_BIN_PATH is unset and $PATH is
+// unusable (the cameras' literal, unexpanded "~/.local/bin") — it must still find
+// herdr via a PATH lookup or the known install locations under $HOME.
+func TestHerdrBin(t *testing.T) {
+	t.Setenv("HERDR_BIN_PATH", "/custom/herdr") // explicit wins
+	if got := herdrBin(); got != "/custom/herdr" {
+		t.Fatalf("HERDR_BIN_PATH: got %q", got)
+	}
+
+	dir := t.TempDir() // empty env → resolved off PATH
+	onpath := filepath.Join(dir, "herdr")
+	if err := os.WriteFile(onpath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HERDR_BIN_PATH", "")
+	t.Setenv("PATH", dir)
+	if got := herdrBin(); got != onpath {
+		t.Errorf("PATH lookup: got %q want %q", got, onpath)
+	}
+
+	home := t.TempDir() // broken PATH → $HOME/.local/bin fallback
+	lb := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(lb, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hb := filepath.Join(lb, "herdr")
+	if err := os.WriteFile(hb, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "/no/such/dir")
+	t.Setenv("HOME", home)
+	if got := herdrBin(); got != hb {
+		t.Errorf("HOME fallback: got %q want %q", got, hb)
+	}
+}
 
 // TestPaneRe guards the pane-id validation that feeds an exec argv. The
 // alphanumeric-workspace case (wE:p3) is the one that regressed once already.
