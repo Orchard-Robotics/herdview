@@ -970,10 +970,6 @@ func main() {
 
 	addr := flag.String("addr", envOr("HERDVIEW_ADDR", "127.0.0.1:8848"),
 		"listen address (default loopback; set a tailnet address to reach it over Tailscale)")
-	// --detach / --stop are recognized so the manifest actions parse cleanly;
-	// detached lifecycle management is a TODO for v0.2.
-	_ = flag.Bool("detach", false, "run in the background (managed lifecycle)")
-	_ = flag.Bool("stop", false, "stop a running detached server")
 	flag.Parse()
 
 	mux := http.NewServeMux()

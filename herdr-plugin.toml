@@ -16,32 +16,20 @@ description = "Phone-first web mirror of your herdr session — watch and steer 
 platforms = ["linux", "macos"]
 
 # Fetch the prebuilt binary for this OS/arch from GitHub Releases. End users need
-# no Go toolchain; this runs once at install time.
+# no Go toolchain; this runs at (re)install time.
 [[build]]
 command = ["sh", "scripts/fetch.sh"]
 
-# Start the mirror server (detached background HTTP server).
-[[actions]]
-id = "start"
-title = "Start herdview"
-contexts = ["workspace"]
-command = ["./herdview", "--detach"]
-
-# Stop it.
-[[actions]]
-id = "stop"
-title = "Stop herdview"
-contexts = ["workspace"]
-command = ["./herdview", "--stop"]
-
-# Alternative to the detached action: run the server visibly in a tucked-away
-# pane whose lifetime is the server's. Open via `herdr plugin pane open`.
+# Run the mirror server in a tucked-away pane whose lifetime is the server's.
+# Open it with:  herdr plugin pane open --plugin orchard.herdview --entrypoint server
 #
 # NOTE: herdr does not run commands through a shell and resolves a bare relative
 # argv[0] (e.g. "./herdview") against $HOME, not the plugin root — so we front
-# with `sh` and exec the binary via the injected $HERDR_PLUGIN_ROOT, which a
-# real shell expands. This is why every example plugin fronts its command with a
-# PATH-resolved interpreter rather than a bare "./binary".
+# with `sh` and exec the binary via the injected $HERDR_PLUGIN_ROOT (available to
+# runtime pane/action commands), which a real shell expands. This is why every
+# example plugin fronts its command with a PATH-resolved interpreter rather than
+# a bare "./binary". A detached start/stop lifecycle is a roadmap item; until
+# then the pane (whose lifetime is the server's) is the supported way to run it.
 [[panes]]
 id = "server"
 title = "herdview server"
