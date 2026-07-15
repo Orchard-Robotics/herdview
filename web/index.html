@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>herdview</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text x='7' y='24' font-family='ui-monospace,SFMono-Regular,Menlo,monospace' font-size='24' font-weight='700' fill='%2333a084'>❯</text></svg>">
 <style>
   :root {
     --bg:#f2f5f3; --surface:#fff; --surface-2:#eaeeeb; --border:#d7ded9;
@@ -649,15 +650,23 @@
     }, []);
 
     // Poll the transcript (or read fallback) and prune expired pending sends.
+    const everLoaded = useRef(false);
     useEffect(() => {
       let alive = true;
+      everLoaded.current = false;   // each pane starts unloaded, so its first-load failure still surfaces
       async function refresh(){
         try {
           const tr = await fetchTranscript(pane, session);
           if(!alive) return;
-          if(tr){ setData({ mode:"convo", msgs: tr.messages || [], readText:"" }); }
-          else { const txt = await fetchRead(pane, session); if(!alive) return; setData({ mode:"text", msgs:null, readText: txt || "" }); }
-        } catch(e){ if(alive) setData({ mode:"text", msgs:null, readText:"can't read pane: " + e.message }); }
+          if(tr){ everLoaded.current = true; setData({ mode:"convo", msgs: tr.messages || [], readText:"" }); }
+          else { const txt = await fetchRead(pane, session); if(!alive) return; everLoaded.current = true; setData({ mode:"text", msgs:null, readText: txt || "" }); }
+        } catch(e){
+          // A transient blip (mobile radio sleep, wifi↔cellular handoff, a herdview
+          // redeploy) must not blank a pane we've already loaded — keep the last-good
+          // content and let the next poll recover. Only surface the error for a pane
+          // that has never successfully loaded.
+          if(alive && !everLoaded.current) setData({ mode:"text", msgs:null, readText:"can't read pane: " + e.message });
+        }
         if(!alive) return;
         setSentLog(prev => {
           const now = Date.now();
@@ -890,6 +899,19 @@
     return { agents, err, poke: () => pokeRef.current && pokeRef.current() };
   }
 
+  // Badge the browser-tab title with the count of agents that need you, but only
+  // while the tab is backgrounded — when it's focused you're already looking, so
+  // keep the plain title. Reset the moment you switch back to the tab.
+  function useTabBadge(blockedCount){
+    useEffect(() => {
+      const base = "herdview";
+      const apply = () => { document.title = (document.hidden && blockedCount > 0) ? `(${blockedCount}) ${base}` : base; };
+      apply();
+      document.addEventListener("visibilitychange", apply);
+      return () => document.removeEventListener("visibilitychange", apply);
+    }, [blockedCount]);
+  }
+
   function useWide(){
     const [wide, setWide] = useState(() => window.matchMedia("(min-width:820px)").matches);
     useEffect(() => {
@@ -909,6 +931,7 @@
     const [sheetOpen, setSheetOpen] = useState(false);
 
     const list = agents || [];
+    useTabBadge(list.filter(a => a.agent_status === "blocked").length);
     const { map, keys } = sessionSummary(list);
     const gated = keys.length > 1;                              // 2+ sessions → the session gate is in play
     const showGate = gated && chosenSession == null;
