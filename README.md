@@ -23,9 +23,42 @@ herdr plugin install <your-org>/herdview                 # needs git read access
 herdr plugin pane open --plugin orchard.herdview --entrypoint server
 ```
 
+### Choosing the clone protocol (SSH vs HTTPS)
+
+`herdr plugin install` takes an `<owner>/<repo>` shorthand (not a full URL). Under
+the hood it fetches with a **hardcoded HTTPS origin** (`https://github.com/<owner>/<repo>.git`),
+running `git` as a subprocess (`git init` + `remote add` + shallow `fetch`) — there's
+no SSH option or `--protocol` flag on the command line, and it injects no token of
+its own. Because it's a real `git` subprocess, it reads your `~/.gitconfig`, so you
+choose the protocol at the git layer. herdview is a private repo, so the fetch needs
+read access over whichever protocol your machine is set up for:
+
+- **HTTPS** (the default) — needs a git credential helper or a personal-access
+  token for `github.com`.
+- **SSH** — if your machine authenticates to GitHub with SSH keys instead, tell
+  git to rewrite HTTPS GitHub URLs to SSH once, *before* installing:
+
+  ```sh
+  git config --global url."git@github.com:".insteadOf "https://github.com/"
+  ```
+
+  To force the reverse (HTTPS even when a global SSH rewrite is set):
+
+  ```sh
+  git config --global url."https://github.com/".insteadOf "git@github.com:"
+  ```
+
+The rewrite is a standard git setting, so it also applies to any other tooling
+that clones from GitHub on that machine.
+
 Then open `http://127.0.0.1:8848` in Moshi's web-preview — or set
 `HERDVIEW_ADDR=<tailnet-ip>:8848` and browse it directly over Tailscale
 (pass it with `--env HERDVIEW_ADDR=…` on the `pane open`).
+
+On a **shared workstation**, if 8848 is already taken (a coworker's or a stale
+instance), herdview automatically walks to the next free port (8849, 8850, …)
+and prints the URL it chose in the pane — so multiple people coexist without
+colliding or killing each other's processes.
 
 To link the Moshi app to a **new** host, pair once (token from the app):
 `moshi-hook pair --token <token> --store file`.
