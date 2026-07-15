@@ -1,10 +1,16 @@
 #!/bin/sh
-# Build step for `herdr plugin install`: select the prebuilt binary committed to
-# this repo for the current OS/arch and place it at ./herdview.
+# Build step for `herdr plugin install`: download the prebuilt herdview binary
+# for this OS/arch from the repo's latest GitHub Release, verify its SHA-256, and
+# place it at ./herdview.
 #
-# No download and no auth — works cleanly from a private repo (herdr has already
-# cloned the checkout, binaries included).
+# herdr runs this in the plugin checkout root with normal PATH + network but a
+# SCRUBBED herdr environment (no HERDR_* vars), so this relies only on relative
+# paths and the public release URL. The repo is public, so the release download
+# needs no auth. Override the source repo with HERDVIEW_REPO=owner/repo (forks).
 set -eu
+
+REPO="${HERDVIEW_REPO:-Orchard-Robotics/herdview}"
+BASE="https://github.com/${REPO}/releases/latest/download"
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$os" in
@@ -20,33 +26,63 @@ case "$arch" in
   *) echo "herdview: unsupported arch '$arch'" >&2; exit 1 ;;
 esac
 
-src="bin/herdview_${os}_${arch}"
-if [ ! -f "$src" ]; then
-  echo "herdview: no prebuilt binary at $src (rebuild with scripts/build.sh)" >&2
+asset="herdview_${os}_${arch}"
+
+# Download <url> to <dest> with curl or wget, whichever is present.
+fetch() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$2" "$1"
+  else
+    echo "herdview: need curl or wget to download the binary" >&2; exit 1
+  fi
+}
+
+tmpbin="herdview.tmp.$$"
+tmpsum="SHA256SUMS.$$"
+trap 'rm -f "$tmpbin" "$tmpsum"' EXIT
+
+echo "herdview: downloading $asset from ${REPO} latest release ..."
+fetch "${BASE}/${asset}" "$tmpbin"
+fetch "${BASE}/SHA256SUMS" "$tmpsum"
+
+# Verify the checksum before trusting the binary.
+expected="$(awk -v f="$asset" '$2 == f {print $1}' "$tmpsum")"
+if [ -z "$expected" ]; then
+  echo "herdview: $asset not listed in SHA256SUMS — release looks incomplete" >&2; exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$tmpbin" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual="$(shasum -a 256 "$tmpbin" | awk '{print $1}')"
+else
+  echo "herdview: need sha256sum or shasum to verify the download" >&2; exit 1
+fi
+if [ "$expected" != "$actual" ]; then
+  echo "herdview: checksum mismatch for $asset" >&2
+  echo "  expected $expected" >&2
+  echo "  got      $actual" >&2
   exit 1
 fi
-# write to a temp file then rename, so a reinstall while the server is running
-# doesn't fail with "text file busy" (rename replaces the in-use inode cleanly).
-tmp="herdview.tmp.$$"
-cp "$src" "$tmp"
-chmod +x "$tmp"
-mv -f "$tmp" herdview
-echo "herdview: installed ./herdview (from $src)"
 
-# --- Moshi host agent (optional, for viewing on the phone via the Moshi app) ---
-# Moshi's in-app "hosted app" detection is powered by moshi-hook running on this
-# host. Install it if missing and make sure its daemon is up. All best-effort —
-# never fail the herdview install over it (e.g. no network, or you don't use Moshi).
-if ! command -v moshi-hook >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/moshi-hook" ]; then
-  echo "herdview: installing moshi-hook (Moshi host agent, for phone access) ..."
-  curl -fsSL https://getmoshi.app/install.sh | sh || echo "herdview: moshi-hook install skipped (non-fatal)"
-fi
-MH="$(command -v moshi-hook 2>/dev/null || true)"; [ -n "$MH" ] || MH="$HOME/.local/bin/moshi-hook"
-if [ -x "$MH" ]; then
-  # start the daemon: prefer a persistent systemd user service, else background serve
-  if ! "$MH" service install >/dev/null 2>&1; then
-    ("$MH" serve >/dev/null 2>&1 &) || true
-  fi
-  echo "herdview: moshi-hook daemon ensured — to link your phone, pair once:"
-  echo "         $MH pair --token <token from the Moshi app> --store file"
+chmod +x "$tmpbin"
+[ "$os" = macos ] && xattr -d com.apple.quarantine "$tmpbin" 2>/dev/null || true
+# Rename into place so reinstalling while the server runs can't hit "text file
+# busy" (rename swaps the inode; the running process keeps its old one).
+mv -f "$tmpbin" herdview
+echo "herdview: installed ./herdview ($asset, checksum verified)"
+
+# --- Moshi host agent (optional) ---
+# The Moshi phone app detects hosted apps via a moshi-hook daemon on this host.
+# A plugin install must not silently install third-party software, so: if
+# moshi-hook is already present we just make sure its daemon is up; otherwise we
+# only point you at it. All best-effort — never fail the install over Moshi.
+MH="$(command -v moshi-hook 2>/dev/null || true)"
+[ -n "$MH" ] || { [ -x "$HOME/.local/bin/moshi-hook" ] && MH="$HOME/.local/bin/moshi-hook"; }
+if [ -n "$MH" ] && [ -x "$MH" ]; then
+  "$MH" service install >/dev/null 2>&1 || ("$MH" serve >/dev/null 2>&1 &) || true
+  echo "herdview: moshi-hook daemon ensured (pair once: $MH pair --token <token> --store file)"
+else
+  echo "herdview: (optional) to view on the Moshi phone app, install moshi-hook — https://getmoshi.app"
 fi
