@@ -39,6 +39,11 @@ var paneRe = regexp.MustCompile(`^w[0-9A-Za-z]+:p[0-9A-Za-z]+$`)
 // private/tailnet IPs are always allowed by hostAllowed without being listed here.
 var allowHosts = map[string]bool{}
 
+// version is the build version, injected at release time via
+// -ldflags "-X main.version=<tag>"; "dev" for local builds. Used by the
+// version-aware --detach launcher to auto-upgrade a running server on reinstall.
+var version = "dev"
+
 // machineHost is this box's own hostname (lower-cased) — allowed so you can reach
 // herdview by name (e.g. http://solo:8848) over the tailnet/LAN.
 var machineHost = func() string { h, _ := os.Hostname(); return strings.ToLower(h) }()
@@ -1045,6 +1050,10 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		fmt.Fprintln(w, version)
+	})
 	mux.HandleFunc("/api/agents", handleAgents)
 	mux.HandleFunc("/api/pane/read", handleRead)
 	mux.HandleFunc("/api/pane/transcript", handleTranscript)
@@ -1103,12 +1112,60 @@ func portListening(addr string) bool {
 	return true
 }
 
-// ensureDetached starts the server as a detached background process, idempotently.
-// It no-ops if one is already serving (a live pidfile process, or anything already
-// listening on the port), and returns fast — so it's safe to call from the install
-// build step and from a high-frequency pane-focus event hook. The child is a fresh
-// session (setsid) with its stdio redirected to a logfile, so it survives both the
-// launching shell and herdr exiting, and never holds one of herdr's command slots.
+// serverVersion returns the version reported by a herdview already serving on
+// addr's port ("" if it's unreachable or a build old enough to lack /api/version).
+func serverVersion(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	c := &http.Client{Timeout: 700 * time.Millisecond}
+	resp, err := c.Get("http://127.0.0.1:" + port + "/api/version")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 128))
+	return strings.TrimSpace(string(b))
+}
+
+// stopByPidfile SIGTERMs the server recorded in pidPath (one WE launched) and
+// waits for the port to free. Returns false if there's no live pidfile process
+// or the port never freed — i.e. it isn't ours to replace, so don't launch over it.
+func stopByPidfile(pidPath, addr string) bool {
+	b, err := os.ReadFile(pidPath)
+	if err != nil {
+		return false
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil || p.Signal(syscall.Signal(0)) != nil {
+		return false
+	}
+	_ = p.Signal(syscall.SIGTERM)
+	for i := 0; i < 25; i++ {
+		if !portListening(addr) {
+			return true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return !portListening(addr)
+}
+
+// ensureDetached starts the server as a detached background process, idempotently
+// and version-aware. If a server is already on the port it no-ops when that's THIS
+// build; otherwise (a different or pre-versioning build) it stops the one WE
+// launched and starts the new build — so a plain reinstall auto-upgrades a running
+// camera. It returns fast (safe from the install build step and the high-frequency
+// pane-focus hook). The child is a fresh session (setsid) with stdio redirected to
+// a logfile, so it survives the launching shell and herdr, and never holds a herdr
+// command slot.
 func ensureDetached(addr string) error {
 	dir := stateDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1126,17 +1183,21 @@ func ensureDetached(addr string) error {
 	}
 	defer syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
 
-	// Already running? (live pidfile process, or the port is already accepting)
 	pidPath := filepath.Join(dir, "herdview.pid")
-	if b, err := os.ReadFile(pidPath); err == nil {
-		if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 0 {
-			if p, err := os.FindProcess(pid); err == nil && p.Signal(syscall.Signal(0)) == nil {
-				return nil
-			}
-		}
-	}
 	if portListening(addr) {
-		return nil
+		v := serverVersion(addr)
+		if v == version {
+			return nil // this exact build is already serving
+		}
+		// A different (or pre-versioning) build holds the port. Replace it — but
+		// only one we launched (live pidfile), so we never kill an unrelated
+		// process squatting on the port.
+		if !stopByPidfile(pidPath, addr) {
+			fmt.Printf("herdview: %s held by a build we didn't start (running=%q, this=%q); leaving it — it updates on reboot\n", addr, v, version)
+			return nil
+		}
+		fmt.Printf("herdview: upgrading server on %s (%q → %q)\n", addr, v, version)
+		// port is now free; fall through to launch the new build
 	}
 
 	exe, err := os.Executable()

@@ -33,6 +33,10 @@ each tagged release.
 To run it in a **visible pane** instead (its lifetime = the server's):
 `herdr plugin pane open --plugin orchard.herdview --entrypoint server`.
 
+**Updating** is just a reinstall: the launcher is version-aware, so `herdr plugin
+install …` again detects a running older build and **auto-swaps in the new one**
+(no kill, no reboot) — a plain reinstall upgrades a whole fleet.
+
 > ⚠️ **Reboot caveat:** the server runs as a detached background process, not a
 > system service. It survives your herdr session, but **not a machine reboot** —
 > after a reboot it comes back the next time you interact with a herdr pane (the
@@ -95,6 +99,7 @@ Run the tests (Go unit + Playwright browser e2e) with `sh scripts/test.sh`.
 
 | Route | Purpose |
 |-------|---------|
+| `GET /api/version` | the running build's version (used by `--detach` to auto-upgrade) |
 | `GET /api/agents` | live agent grid across all sessions (state, cwd, branch, session) |
 | `GET /api/pane/read?pane=ID&session=S` | recent output for one pane (text) |
 | `GET /api/pane/transcript?pane=ID&session=S` | structured conversation (chat bubbles); 404 → fall back to read |

@@ -7,10 +7,14 @@
 set -eu
 cd "$(dirname "$0")/.."
 mkdir -p bin
+# Version stamped into the binary (release.yml passes the git tag); "dev" locally.
+# The version-aware --detach launcher compares this across builds to auto-upgrade.
+VERSION="${VERSION:-dev}"
 for pair in linux/arm64 linux/amd64 darwin/arm64 darwin/amd64; do
   os=${pair%/*}; arch=${pair#*/}
   label=$( [ "$os" = darwin ] && echo macos || echo "$os" )
-  GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
+  GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath \
+    -ldflags "-s -w -X main.version=${VERSION}" \
     -o "bin/herdview_${label}_${arch}" ./cmd/herdview
-  echo "built bin/herdview_${label}_${arch}"
+  echo "built bin/herdview_${label}_${arch} (version ${VERSION})"
 done
