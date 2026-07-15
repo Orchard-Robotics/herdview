@@ -10,7 +10,10 @@
 set -eu
 
 REPO="${HERDVIEW_REPO:-Orchard-Robotics/herdview}"
-BASE="https://github.com/${REPO}/releases/latest/download"
+# Where release assets live. Defaults to this repo's latest GitHub Release;
+# override with HERDVIEW_RELEASE_BASE to install from a fork, a mirror, or a
+# local server (also how the install path is tested).
+BASE="${HERDVIEW_RELEASE_BASE:-https://github.com/${REPO}/releases/latest/download}"
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$os" in
