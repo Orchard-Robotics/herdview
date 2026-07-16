@@ -962,6 +962,85 @@ func handleRename(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// paneCwd resolves a pane's working directory from the session's agent list.
+func paneCwd(socket, pane string) string {
+	out, err := runHerdrOn(socket, "agent", "list")
+	if err != nil {
+		return ""
+	}
+	var res agentListResult
+	if json.Unmarshal(out, &res) != nil {
+		return ""
+	}
+	for _, a := range res.Result.Agents {
+		if a.Pane == pane {
+			return a.Cwd
+		}
+	}
+	return ""
+}
+
+// gitIn runs a git subcommand in cwd with a short timeout, returning trimmed
+// stdout and whether it succeeded.
+func gitIn(cwd string, args ...string) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", cwd}, args...)...).Output()
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(out)), true
+}
+
+// capDiff truncates a diff to at most max bytes on a line boundary, reporting
+// whether it was cut — so one giant diff can't blow up the phone payload.
+func capDiff(s string, max int) (string, bool) {
+	if len(s) <= max {
+		return s, false
+	}
+	s = s[:max]
+	if i := strings.LastIndexByte(s, '\n'); i > 0 {
+		s = s[:i]
+	}
+	return s, true
+}
+
+// handleDiff returns the agent repo's uncommitted changes: the working diff
+// (staged+unstaged vs HEAD) plus a --stat summary and the untracked file names.
+// (Branch-vs-base was dropped: git records no fork point, and repos with several
+// unrelated mainlines can't be auto-based reliably.)
+func handleDiff(w http.ResponseWriter, r *http.Request) {
+	socket, pane, ok := resolveTarget(w, r)
+	if !ok {
+		return
+	}
+	cwd := paneCwd(socket, pane)
+	if cwd == "" {
+		http.Error(w, "no working directory for pane", http.StatusNotFound)
+		return
+	}
+	if _, ok := gitIn(cwd, "rev-parse", "--is-inside-work-tree"); !ok {
+		http.Error(w, "not a git repository", http.StatusNotFound)
+		return
+	}
+	const cap = 400 * 1024
+	wstat, _ := gitIn(cwd, "diff", "--stat", "HEAD")
+	wdiff, _ := gitIn(cwd, "diff", "HEAD")
+	diff, truncated := capDiff(wdiff, cap)
+	var untracked []string
+	if u, ok := gitIn(cwd, "ls-files", "--others", "--exclude-standard"); ok && u != "" {
+		untracked = strings.Split(u, "\n")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"branch_name": gitBranch(cwd),
+		"stat":        wstat,
+		"diff":        diff,
+		"untracked":   untracked,
+		"truncated":   truncated,
+	})
+}
+
 // targetSocket resolves a session name (from a request body) to its herdr
 // socket; "" means the ambient session. Writes a 400 for an unknown session.
 func targetSocket(w http.ResponseWriter, session string) (string, bool) {
@@ -1100,6 +1179,7 @@ func main() {
 	mux.HandleFunc("/api/pane/key", handleKey)
 	mux.HandleFunc("/api/pane/choices", handleChoices)
 	mux.HandleFunc("/api/pane/tasks", handleTasks)
+	mux.HandleFunc("/api/pane/diff", handleDiff)
 	mux.HandleFunc("/api/pane/rename", handleRename)
 	mux.HandleFunc("/api/worktree", handleNewWorktree)
 	mux.HandleFunc("/api/agent", handleNewAgent)

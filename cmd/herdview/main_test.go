@@ -129,6 +129,19 @@ func TestConfigDirFromEnviron(t *testing.T) {
 	}
 }
 
+// TestCapDiff covers the diff size cap: pass-through under the limit, and a cut
+// back to a line boundary (never mid-line) over it.
+func TestCapDiff(t *testing.T) {
+	s := "line1\nline2\nline3\n"
+	if out, tr := capDiff(s, 1000); tr || out != s {
+		t.Errorf("under cap: got trunc=%v out=%q", tr, out)
+	}
+	out, tr := capDiff("aaaa\nbbbb\ncccc", 7) // [:7]="aaaa\nbb" → cut to last \n → "aaaa"
+	if !tr || out != "aaaa" {
+		t.Errorf("over cap: got trunc=%v out=%q, want trunc=true out=%q", tr, out, "aaaa")
+	}
+}
+
 // TestGuard covers the DNS-rebinding (Host) and CSRF (Origin) defenses.
 func TestGuard(t *testing.T) {
 	old := allowHosts

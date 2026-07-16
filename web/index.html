@@ -244,6 +244,30 @@
   .prompt textarea:focus{outline:2px solid var(--accent);outline-offset:1px;}
   .send{appearance:none;border:none;background:var(--accent);color:#fff;font-weight:600;
     border-radius:11px;padding:0 1rem;height:2.7rem;cursor:pointer;font-size:.95rem;}
+  /* diff tool */
+  .dtools{display:flex;gap:.4rem;flex:0 0 auto;}
+  .dtool{appearance:none;border:1px solid var(--border);background:var(--surface);color:var(--muted);
+    font-family:var(--mono);font-size:.7rem;border-radius:8px;padding:.3rem .6rem;cursor:pointer;-webkit-tap-highlight-color:transparent;}
+  .dtool:active{transform:translateY(1px);}
+  .diffov{position:fixed;inset:0;z-index:60;background:var(--bg);display:flex;flex-direction:column;}
+  .diffhead{display:flex;justify-content:space-between;align-items:center;gap:.5rem;
+    padding:.7rem 1rem;border-bottom:1px solid var(--border);flex:0 0 auto;}
+  .diffttl{font-family:var(--mono);font-size:.8rem;color:var(--accent-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .diffscroll{flex:1;min-height:0;overflow:auto;padding:.6rem;-webkit-overflow-scrolling:touch;}
+  .diffstat{font-family:var(--mono);font-size:.72rem;color:var(--muted);white-space:pre;overflow-x:auto;
+    margin:0 0 .6rem;padding:.5rem .6rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;}
+  .diffbody{font-family:var(--mono);font-size:.72rem;line-height:1.45;white-space:pre;overflow-x:auto;
+    border:1px solid var(--border);border-radius:8px;background:var(--code-bg);padding:.3rem 0;}
+  .dl{padding:0 .6rem;}
+  .dl.dgit{background:var(--surface-2);font-weight:600;color:var(--ink);margin-top:.4rem;}
+  .dl.dmeta{color:var(--faint);}
+  .dl.dhunk{background:var(--surface-2);color:var(--accent-ink);}
+  .dl.dadd{background:rgba(46,160,67,.16);}
+  .dl.ddel{background:rgba(248,81,73,.16);}
+  .difftrunc{color:var(--blocked);font-size:.75rem;padding:.5rem .2rem;}
+  .diffuntr{margin-top:.7rem;}
+  .diffuh{font-family:var(--mono);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:.25rem;}
+  .untr{font-family:var(--mono);font-size:.74rem;color:var(--accent-ink);padding:.1rem .2rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .send:disabled{opacity:.5;}
   .hint{font-family:var(--mono);font-size:.68rem;color:var(--faint);text-align:center;}
   footer{max-width:660px;margin:1rem auto 1.5rem;padding:0 1.1rem;font-family:var(--mono);
@@ -619,6 +643,29 @@
     </div>`;
   }
 
+  // Colored unified-diff renderer. Builds DOM text nodes imperatively (never
+  // innerHTML) so diff content can't inject markup.
+  function DiffBody({ text }){
+    const ref = useRef(null);
+    useLayoutEffect(() => {
+      const el = ref.current; if(!el) return;
+      el.textContent = "";
+      for(const line of (text || "").split("\n")){
+        const d = document.createElement("div");
+        let c = "dl";
+        if(line.startsWith("diff --git")) c = "dl dgit";
+        else if(line.startsWith("@@")) c = "dl dhunk";
+        else if(/^(index |--- |\+\+\+ |new file|deleted file|old mode|new mode|similarity|rename |Binary )/.test(line)) c = "dl dmeta";
+        else if(line[0] === "+") c = "dl dadd";
+        else if(line[0] === "-") c = "dl ddel";
+        d.className = c;
+        d.textContent = line === "" ? " " : line;
+        el.appendChild(d);
+      }
+    }, [text]);
+    return html`<div class="diffbody" ref=${ref}></div>`;
+  }
+
   function Detail({ agent, session }){
     const pane = agent.pane_id;
     const status = agent.agent_status || "unknown";
@@ -637,6 +684,18 @@
     const [artifacts, setArtifacts] = useState(() => loadArtifacts(session, pane));
     const [tasks, setTasks] = useState({ tasks:[], done:0, total:0 });
     const [, setTick] = useState(0);     // drives elapsed/preview refresh each poll
+    const [diffOpen, setDiffOpen] = useState(false);
+    const [diffData, setDiffData] = useState(null);
+    const [diffErr, setDiffErr] = useState(null);
+
+    async function openDiff(){
+      setDiffOpen(true); setDiffData(null); setDiffErr(null);
+      try {
+        const r = await fetch("/api/pane/diff?" + pq(pane, session), { cache:"no-store" });
+        if(!r.ok){ setDiffErr(r.status === 404 ? "no git repo for this agent" : "diff failed (HTTP " + r.status + ")"); return; }
+        setDiffData(await r.json());
+      } catch(e){ setDiffErr(e.message); }
+    }
 
     // Track the start of the current working episode (kept through transient
     // blocked/unknown flickers; cleared only when the agent goes idle).
@@ -828,6 +887,9 @@
     const blockedPending = status === "blocked" ? lastPending(data.msgs) : null;
 
     return html`<div class="detail">
+      <div class="dtools">
+        <button class="dtool" type="button" onClick=${openDiff}>⑂ diff</button>
+      </div>
       ${tasks.total ? html`<${Tasks} data=${tasks} />` : null}
       ${artifacts.length ? html`<${Artifacts} items=${artifacts} />` : null}
       <div class="convo" id="convo" ref=${convoRef} onScroll=${onScroll}>
@@ -889,6 +951,26 @@
         <button class="send" id="sendbtn" onClick=${send} disabled=${sending}>Send</button>
       </div>
       <div class="hint">types into the live session · Enter = newline · Shift+Enter or Send to send</div>
+      ${diffOpen ? html`<div class="diffov">
+        <div class="diffhead">
+          <span class="diffttl">⑂ diff · ${(diffData && diffData.branch_name) || agent.branch || ""}</span>
+          <button class="minbtn" type="button" aria-label="close" onClick=${() => setDiffOpen(false)}>✕</button>
+        </div>
+        <div class="diffscroll">
+          ${diffErr ? html`<div class="sys">${diffErr}</div>`
+            : !diffData ? html`<div class="hint">loading diff…</div>`
+            : html`
+              ${diffData.stat ? html`<pre class="diffstat">${diffData.stat}</pre>` : null}
+              ${diffData.diff ? html`<${DiffBody} text=${diffData.diff} />` : (
+                (diffData.untracked && diffData.untracked.length) ? null : html`<div class="sys">no uncommitted changes</div>`)}
+              ${diffData.truncated ? html`<div class="difftrunc">⋯ diff truncated (too large to show in full)</div>` : null}
+              ${(diffData.untracked && diffData.untracked.length) ? html`<div class="diffuntr">
+                <div class="diffuh">untracked (${diffData.untracked.length})</div>
+                ${diffData.untracked.map((f, i) => html`<div class="untr" key=${i}>+ ${f}</div>`)}
+              </div>` : null}
+            `}
+        </div>
+      </div>` : null}
     </div>`;
   }
 

@@ -61,6 +61,8 @@ prints a pointer. To link the app to a host, pair once (token from the app):
   and fenced code), a compose box (Shift+Enter to send), tappable **multiple-choice
   answers** for `AskUserQuestion`/permission prompts, a **task checklist**, and a
   side list of any **artifact links** the agent produced.
+- **⑂ diff** — a colored view of the agent's **uncommitted changes** (working diff
+  + `--stat` summary + untracked files), rendered on the phone.
 - When you switch tabs, the **browser-tab title badges** the count of agents that
   need you — `(N) herdview` — and clears when you return.
 
@@ -105,6 +107,7 @@ Run the tests (Go unit + Playwright browser e2e) with `sh scripts/test.sh`.
 | `GET /api/pane/transcript?pane=ID&session=S` | structured conversation (chat bubbles); 404 → fall back to read |
 | `GET /api/pane/choices?pane=ID&session=S` | parsed multiple-choice prompt, if the pane is sitting on one |
 | `GET /api/pane/tasks?pane=ID&session=S` | parsed task checklist, if present |
+| `GET /api/pane/diff?pane=ID&session=S` | the agent repo's uncommitted working diff (+ `--stat`, untracked) |
 | `POST /api/pane/send?pane=ID&session=S` | `{text}` → type + Enter into the pane |
 | `POST /api/pane/key?pane=ID&session=S` | `{keys:[...]}` → raw keystrokes (menus) |
 
