@@ -24,7 +24,7 @@ test("the diff tool shows a colored working diff + untracked files", async ({ pa
   await page.route("**/api/pane/diff**", (r) => r.fulfill({ contentType: "application/json", body: JSON.stringify(DIFF) }));
   await page.goto("/");
   await page.locator('[data-pane="w3:p1"]').click();
-  await page.locator(".dtool").click();
+  await page.locator(".diffbtn").click();
 
   await expect(page.locator(".diffov")).toBeVisible();
   await expect(page.locator(".diffttl")).toContainText("feat/thing");
@@ -44,7 +44,7 @@ test("diff content is rendered as text, never injected", async ({ page }) => {
   await page.route("**/api/pane/diff**", (r) => r.fulfill({ contentType: "application/json", body: JSON.stringify(evil) }));
   await page.goto("/");
   await page.locator('[data-pane="w3:p1"]').click();
-  await page.locator(".dtool").click();
+  await page.locator(".diffbtn").click();
   await expect(page.locator(".diffbody .dl.dadd")).toContainText("<img");
   expect(await page.evaluate(() => window.__pwned)).toBeUndefined();
 });
@@ -53,6 +53,6 @@ test("diff tool shows a friendly message when the agent has no git repo", async 
   await page.route("**/api/pane/diff**", (r) => r.fulfill({ status: 404, body: "not a git repository" }));
   await page.goto("/");
   await page.locator('[data-pane="w3:p1"]').click();
-  await page.locator(".dtool").click();
+  await page.locator(".diffbtn").click();
   await expect(page.locator(".diffov .sys", { hasText: /no git repo/i })).toBeVisible();
 });

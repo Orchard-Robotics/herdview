@@ -247,10 +247,10 @@
   .send{appearance:none;border:none;background:var(--accent);color:#fff;font-weight:600;
     border-radius:11px;padding:0 1rem;height:2.7rem;cursor:pointer;font-size:.95rem;}
   /* diff tool */
-  .dtools{display:flex;gap:.4rem;flex:0 0 auto;}
-  .dtool{appearance:none;border:1px solid var(--border);background:var(--surface);color:var(--muted);
-    font-family:var(--mono);font-size:.7rem;border-radius:8px;padding:.3rem .6rem;cursor:pointer;-webkit-tap-highlight-color:transparent;}
-  .dtool:active{transform:translateY(1px);}
+  .diffbtn{appearance:none;border:1px solid var(--border);background:var(--surface);color:var(--muted);
+    border-radius:11px;height:2.7rem;padding:0 .75rem;cursor:pointer;font-size:1.05rem;flex:0 0 auto;
+    -webkit-tap-highlight-color:transparent;}
+  .diffbtn:active{transform:translateY(1px);}
   .diffov{position:fixed;inset:0;z-index:60;background:var(--bg);display:flex;flex-direction:column;}
   .diffhead{display:flex;justify-content:space-between;align-items:center;gap:.5rem;
     padding:.7rem 1rem;border-bottom:1px solid var(--border);flex:0 0 auto;}
@@ -889,9 +889,6 @@
     const blockedPending = status === "blocked" ? lastPending(data.msgs) : null;
 
     return html`<div class="detail">
-      <div class="dtools">
-        <button class="dtool" type="button" onClick=${openDiff}>⑂ diff</button>
-      </div>
       ${tasks.total ? html`<${Tasks} data=${tasks} />` : null}
       ${artifacts.length ? html`<${Artifacts} items=${artifacts} />` : null}
       <div class="convo" id="convo" ref=${convoRef} onScroll=${onScroll}>
@@ -953,6 +950,7 @@
         `) : null}
       </div>
       <div class="prompt">
+        <button class="diffbtn" type="button" onClick=${openDiff} aria-label="view diff" title="view diff">⑂</button>
         <textarea id="msg" rows="1" placeholder="Message this agent…" ref=${taRef} onInput=${onInput}
           onKeyDown=${(e) => { if(e.key === "Enter" && e.shiftKey){ e.preventDefault(); send(); } }}></textarea>
         <button class="send" id="sendbtn" onClick=${send} disabled=${sending}>Send</button>
