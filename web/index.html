@@ -74,8 +74,10 @@
   .card.blocked{border-left-color:var(--blocked);}
   .card.working{border-left-color:var(--working);}
   .card.idle{border-left-color:var(--idle);}
-  /* the agent currently open in the detail pane (desktop two-pane) */
-  .card.selected{background:var(--accent-soft);box-shadow:0 0 0 2px var(--accent);}
+  /* the agent currently open in the detail pane (desktop two-pane): a single
+     clean cue — soft accent fill + the left stripe recolored to accent — instead
+     of a ring stacked on top of the status stripe. */
+  .card.selected{background:var(--accent-soft);border-color:var(--border);border-left-color:var(--accent);}
   .row{display:flex;align-items:center;justify-content:space-between;gap:.6rem;}
   .name{font-weight:620;font-size:1rem;}
   .name .chev{color:var(--faint);font-weight:400;}
