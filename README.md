@@ -128,6 +128,9 @@ herdview upgrades it to a live element in the chat bubble (no artifact, no new t
 - ` ```html-widget ` — raw HTML/SVG/canvas, rendered in a **sandboxed iframe**
   (`sandbox="allow-scripts"`, CSP `default-src 'none'` → no network, no page access),
   auto-sized to its content.
+- ` ```diff ` — a colorized diff (green adds, red deletes, dimmed hunk/file headers).
+- **Callouts** — `> [!NOTE] / [!TIP] / [!IMPORTANT] / [!WARNING] / [!CAUTION]` render
+  as colored admonition boxes.
 
 JSON blocks become DOM nodes; malformed input falls back to a plain code block, so
 nothing is lost. Turn rendering off (view raw) with **⚙ → Render rich blocks**.

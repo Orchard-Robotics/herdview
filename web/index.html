@@ -167,6 +167,16 @@
   .bubble .md-h{font-weight:650;}
   .bubble .md-list{margin:.35rem 0;padding-left:1.25rem;}
   .bubble .md-list li{margin:.12rem 0;}
+  /* GitHub-style callouts (> [!NOTE] etc.) + plain blockquotes */
+  .bubble .callout{border-left:3px solid var(--border);background:var(--surface);border-radius:0 9px 9px 0;padding:.45rem .7rem;margin:.45rem 0;}
+  .callout-h{font-family:var(--mono);font-size:.64rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.2rem;}
+  .callout-note{border-left-color:#3b82f6;} .callout-note .callout-h{color:#3b82f6;}
+  .callout-tip{border-left-color:var(--accent);} .callout-tip .callout-h{color:var(--accent-ink);}
+  .callout-important{border-left-color:#8b5cf6;} .callout-important .callout-h{color:#8b5cf6;}
+  .callout-warning{border-left-color:var(--working);} .callout-warning .callout-h{color:var(--working);}
+  .callout-caution{border-left-color:var(--blocked);} .callout-caution .callout-h{color:var(--blocked);}
+  .callout-quote{color:var(--muted);font-style:italic;}
+  .msg.user .bubble .callout{background:rgba(255,255,255,.12);}
   .bubble strong{font-weight:650;}
   .bubble em{font-style:italic;}
   .bubble code{font-family:var(--mono);font-size:.82em;background:var(--surface-2);border:1px solid var(--border);
@@ -496,12 +506,31 @@
     });
   });
 
+  // Colorize a ```diff fence into a .diffbody element (text nodes only).
+  function hvDiffEl(text){
+    const el = document.createElement("div"); el.className = "diffbody";
+    for(const line of (text || "").split("\n")){
+      const d = document.createElement("div");
+      let c = "dl";
+      if(line.startsWith("diff --git")) c = "dl dgit";
+      else if(line.startsWith("@@")) c = "dl dhunk";
+      else if(/^(index |--- |\+\+\+ |new file|deleted file|old mode|new mode|similarity|rename |Binary )/.test(line)) c = "dl dmeta";
+      else if(line[0] === "+") c = "dl dadd";
+      else if(line[0] === "-") c = "dl ddel";
+      d.className = c;
+      d.textContent = line === "" ? " " : line;
+      el.appendChild(d);
+    }
+    return el;
+  }
+
   function renderRichBlock(parent, lang, content){
     let el = null;
     try {
       if(lang === "herdview-card") el = hvCard(JSON.parse(content));
       else if(lang === "herdview-chart") el = hvChart(JSON.parse(content));
       else if(lang === "html-widget") el = hvWidget(content);
+      else if(lang === "diff") el = hvDiffEl(content);
     } catch(e){ return false; }
     if(el){ parent.appendChild(el); return true; }
     return false;
@@ -547,6 +576,33 @@
           tbody.appendChild(tr);
         });
         table.appendChild(tbody); wrap.appendChild(table); parent.appendChild(wrap); continue;
+      }
+      if(/^\s*>/.test(line)){                                     // blockquote / GitHub callout
+        closeList();
+        const q = [];
+        while(i < lines.length && /^\s*>/.test(lines[i])){ q.push(lines[i].replace(/^\s*>\s?/, "")); i++; }
+        const m = q[0] && q[0].match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*)$/i);
+        const box = document.createElement("div");
+        const fill = (arr) => {
+          let para = null;
+          for(const ln of arr){
+            if(ln.trim() === ""){ para = null; continue; }
+            if(!para){ para = document.createElement("div"); para.className = "md-p"; box.appendChild(para); } else { para.appendChild(document.createElement("br")); }
+            mdInline(para, ln);
+          }
+        };
+        if(m){
+          const type = m[1].toUpperCase();
+          box.className = "callout callout-" + type.toLowerCase();
+          const head = document.createElement("div"); head.className = "callout-h";
+          head.textContent = ({ NOTE:"ℹ Note", TIP:"◆ Tip", IMPORTANT:"★ Important", WARNING:"▲ Warning", CAUTION:"⛔ Caution" })[type] || type;
+          box.appendChild(head);
+          fill((m[2] ? [m[2]] : []).concat(q.slice(1)));
+        } else {
+          box.className = "callout callout-quote";
+          fill(q);
+        }
+        parent.appendChild(box); continue;
       }
       const hd = line.match(/^(#{1,6})\s+(.*)$/);
       if(hd){ closeList(); const d = document.createElement("div"); d.className = "md-h"; mdInline(d, hd[2]); parent.appendChild(d); i++; continue; }

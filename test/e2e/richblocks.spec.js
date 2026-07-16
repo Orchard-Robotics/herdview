@@ -49,6 +49,22 @@ test("agent-emitted rich blocks render as card / chart / widget", async ({ page 
   await page.screenshot({ path: process.env.HV_SHOT || "/tmp/richblocks.png", fullPage: true });
 });
 
+test("a ```diff fence renders colorized", async ({ page }) => {
+  env.setTranscript([env.assistantTurn(["```diff", "@@ -1 +1 @@", "-old line", "+new line", "```"].join("\n"))]);
+  await page.goto("/");
+  await page.locator('[data-pane="w3:p1"]').click();
+  await expect(page.locator(".diffbody .dl.dadd", { hasText: "new line" })).toBeVisible();
+  await expect(page.locator(".diffbody .dl.ddel", { hasText: "old line" })).toBeVisible();
+});
+
+test("GitHub callouts render as styled admonitions", async ({ page }) => {
+  env.setTranscript([env.assistantTurn("> [!WARNING]\n> radio sleep can drop the link")]);
+  await page.goto("/");
+  await page.locator('[data-pane="w3:p1"]').click();
+  await expect(page.locator(".callout.callout-warning .callout-h")).toContainText(/warning/i);
+  await expect(page.locator(".callout.callout-warning", { hasText: "radio sleep" })).toBeVisible();
+});
+
 test("bad JSON falls back to a raw code block (never lost)", async ({ page }) => {
   env.setTranscript([env.assistantTurn("```herdview-card\n{not valid json,}\n```")]);
   await page.goto("/");

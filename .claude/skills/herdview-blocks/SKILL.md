@@ -93,6 +93,27 @@ Keep widgets small and self-contained (no external URLs — they're blocked).
 
 ---
 
+## ` ```diff ` — a colorized diff
+
+A plain ` ```diff ` fence renders with green additions / red deletions / dimmed
+hunk & file headers. Use it to show a proposed or applied change:
+
+```diff
+@@ -1 +1 @@
+-MAX_APPLES = 10
++MAX_APPLES = 20
+```
+
+## Callouts — `> [!NOTE]` and friends
+
+GitHub-style callouts render as colored admonition boxes. Types: `NOTE`, `TIP`,
+`IMPORTANT`, `WARNING`, `CAUTION`. Use sparingly for a single key point.
+
+```
+> [!WARNING]
+> This drops all rows before re-inserting — back up first.
+```
+
 ## Notes
 
 - These are **inline** — a card/chart/widget appears in the bubble where you
