@@ -123,17 +123,17 @@
 
   /* detail */
   .detail{display:flex;flex-direction:column;gap:.7rem;flex:1;min-height:0;}
-  .artifacts{flex:0 0 auto;border:1px solid var(--border);border-radius:11px;background:var(--surface);overflow:hidden;}
+  .artifacts{display:flex;flex-direction:column;flex:0 1 auto;min-height:0;border:1px solid var(--border);border-radius:11px;background:var(--surface);overflow:hidden;}
   .art-h{appearance:none;border:none;background:transparent;color:var(--accent-ink);width:100%;text-align:left;font-weight:600;
     font-family:var(--mono);font-size:.74rem;padding:.5rem .7rem;cursor:pointer;display:flex;justify-content:space-between;align-items:center;-webkit-tap-highlight-color:transparent;}
   .art-h .chev{color:var(--faint);font-weight:400;}
-  .art-list{display:flex;flex-direction:column;max-height:30vh;overflow-y:auto;border-top:1px solid var(--border);}
+  .art-list{display:flex;flex-direction:column;flex:1;min-height:0;max-height:26vh;overflow-y:auto;border-top:1px solid var(--border);}
   .art-item{padding:.5rem .7rem;font-family:var(--mono);font-size:.76rem;color:var(--accent-ink);
     text-decoration:none;border-top:1px solid var(--border);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .art-item:first-child{border-top:none;}
   .art-item:active{background:var(--surface-2);}
-  .tasks{flex:0 0 auto;border:1px solid var(--border);border-radius:11px;background:var(--surface);overflow:hidden;}
-  .task-list{border-top:1px solid var(--border);max-height:32vh;overflow-y:auto;padding:.25rem 0;}
+  .tasks{display:flex;flex-direction:column;flex:0 1 auto;min-height:0;border:1px solid var(--border);border-radius:11px;background:var(--surface);overflow:hidden;}
+  .task-list{flex:1;min-height:0;border-top:1px solid var(--border);max-height:26vh;overflow-y:auto;padding:.25rem 0;}
   .task-item{font-size:.82rem;padding:.28rem .7rem;display:flex;gap:.5rem;align-items:baseline;line-height:1.35;}
   .task-item .task-g{font-family:var(--mono);flex:0 0 auto;}
   .task-item.done{color:var(--muted);} .task-item.done .task-g{color:var(--idle);}
@@ -216,7 +216,9 @@
   .minbtn{appearance:none;border:none;background:transparent;color:var(--working);
     font-size:.95rem;line-height:1;cursor:pointer;padding:.1rem .35rem;margin:-.2rem -.2rem 0 0;}
   @media(prefers-reduced-motion:reduce){.typing span{animation:none!important;}.convo{scroll-behavior:auto!important;}}
-  .keys{display:flex;flex-direction:column;gap:.5rem;}
+  /* Approve/choices module: pinned (never shrinks away), but capped so a huge
+     permcard scrolls internally instead of pushing the textbox off-screen. */
+  .keys{display:flex;flex-direction:column;gap:.5rem;flex:0 0 auto;max-height:42vh;overflow-y:auto;}
   .keys:empty{display:none;}
   .permcard{background:var(--blocked-soft);border:1px solid var(--blocked);border-radius:12px;padding:.75rem .85rem;}
   .permh{font-family:var(--mono);font-size:.68rem;letter-spacing:.05em;color:var(--blocked);margin-bottom:.35rem;}
@@ -234,7 +236,7 @@
   .key:active{transform:translateY(1px);}
   .key.go{background:var(--accent);color:#fff;border-color:transparent;}
   .key.warn{background:var(--blocked-soft);color:var(--blocked);border-color:transparent;}
-  .prompt{display:flex;gap:.5rem;align-items:flex-end;
+  .prompt{display:flex;gap:.5rem;align-items:flex-end;flex:0 0 auto;
     position:sticky;bottom:0;padding-bottom:calc(env(safe-area-inset-bottom) + .3rem);}
   .prompt textarea{flex:1;resize:none;border:1px solid var(--border);border-radius:11px;
     background:var(--surface);color:var(--ink);font-family:var(--sans);font-size:.95rem;
