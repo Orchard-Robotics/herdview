@@ -223,6 +223,8 @@
   .hv-sparkl{fill:none;stroke:var(--accent);stroke-width:2;vector-effect:non-scaling-stroke;}
   .hv-sparka{fill:var(--accent-soft);stroke:none;}
   .bubble .hv-widget{width:100%;border:1px solid var(--border);border-radius:11px;background:var(--surface);margin:.45rem 0;height:120px;display:block;}
+  .bubble .hv-mermaid{margin:.5rem 0;overflow-x:auto;text-align:center;}
+  .bubble .hv-mermaid svg{max-width:100%;height:auto;}
   .tools{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem;}
   .toolchip{font-family:var(--mono);font-size:.63rem;background:var(--surface-2);border:1px solid var(--border);
     color:var(--muted);border-radius:6px;padding:.12rem .4rem;}
@@ -524,6 +526,49 @@
     return el;
   }
 
+  // Mermaid diagrams (```mermaid): lazy-load the vendored UMD build once, render to
+  // SVG (securityLevel strict), and adopt the SVG via DOMParser (no innerHTML, no
+  // script execution). ~3.5MB, fetched only when a diagram first appears.
+  let _mermaidP = null;
+  function loadMermaid(){
+    if(_mermaidP) return _mermaidP;
+    _mermaidP = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "/vendor/mermaid.min.js";
+      s.onload = () => {
+        try {
+          const dark = matchMedia("(prefers-color-scheme: dark)").matches || document.documentElement.getAttribute("data-theme") === "dark";
+          window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" });
+          resolve(window.mermaid);
+        } catch(e){ reject(e); }
+      };
+      s.onerror = () => reject(new Error("failed to load mermaid"));
+      document.head.appendChild(s);
+    });
+    return _mermaidP;
+  }
+  let _mmid = 0;
+  function hvMermaid(code){
+    const box = document.createElement("div"); box.className = "hv-mermaid";
+    const ph = document.createElement("div"); ph.className = "hint"; ph.textContent = "rendering diagram…";
+    box.appendChild(ph);
+    loadMermaid()
+      .then(m => m.render("hv-mmd-" + (++_mmid), code))
+      .then(({ svg }) => {
+        const el = new DOMParser().parseFromString(svg, "image/svg+xml").documentElement;
+        if(!el || el.nodeName.toLowerCase() !== "svg") throw new Error("bad svg");
+        box.textContent = ""; box.appendChild(document.importNode(el, true));
+      })
+      .catch(err => {
+        box.textContent = "";
+        const note = document.createElement("div"); note.className = "hint"; note.textContent = "diagram error: " + ((err && err.message) || err);
+        const pre = document.createElement("pre"); pre.className = "md-code";
+        const c = document.createElement("code"); c.textContent = code; pre.appendChild(c);
+        box.append(note, pre);
+      });
+    return box;
+  }
+
   function renderRichBlock(parent, lang, content){
     let el = null;
     try {
@@ -531,6 +576,7 @@
       else if(lang === "herdview-chart") el = hvChart(JSON.parse(content));
       else if(lang === "html-widget") el = hvWidget(content);
       else if(lang === "diff") el = hvDiffEl(content);
+      else if(lang === "mermaid") el = hvMermaid(content);
     } catch(e){ return false; }
     if(el){ parent.appendChild(el); return true; }
     return false;

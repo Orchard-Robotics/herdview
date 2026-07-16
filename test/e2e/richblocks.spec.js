@@ -65,6 +65,15 @@ test("GitHub callouts render as styled admonitions", async ({ page }) => {
   await expect(page.locator(".callout.callout-warning", { hasText: "radio sleep" })).toBeVisible();
 });
 
+test("a ```mermaid block renders an SVG diagram", async ({ page }) => {
+  env.setTranscript([env.assistantTurn("```mermaid\nflowchart LR\n  A[Scan] --> B[Process] --> C[Upload]\n```")]);
+  await page.goto("/");
+  await page.locator('[data-pane="w3:p1"]').click();
+  await expect(page.locator(".hv-mermaid svg")).toBeVisible({ timeout: 20000 });
+  await expect(page.locator(".hv-mermaid")).not.toContainText("diagram error");
+  if(process.env.HV_MMSHOT) await page.locator(".hv-mermaid").screenshot({ path: process.env.HV_MMSHOT });
+});
+
 test("bad JSON falls back to a raw code block (never lost)", async ({ page }) => {
   env.setTranscript([env.assistantTurn("```herdview-card\n{not valid json,}\n```")]);
   await page.goto("/");

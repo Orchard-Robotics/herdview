@@ -114,6 +114,18 @@ GitHub-style callouts render as colored admonition boxes. Types: `NOTE`, `TIP`,
 > This drops all rows before re-inserting — back up first.
 ```
 
+## ` ```mermaid ` — a diagram
+
+Standard [Mermaid](https://mermaid.js.org) diagrams (flowchart, sequence, state,
+gantt, …) render to SVG. Great for architecture, data flow, or a state machine.
+
+```mermaid
+flowchart LR
+  Scan --> Process --> Upload
+```
+
+Keep diagrams small — they render inline in a bubble.
+
 ## Notes
 
 - These are **inline** — a card/chart/widget appears in the bubble where you

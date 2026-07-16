@@ -131,6 +131,9 @@ herdview upgrades it to a live element in the chat bubble (no artifact, no new t
 - ` ```diff ` — a colorized diff (green adds, red deletes, dimmed hunk/file headers).
 - **Callouts** — `> [!NOTE] / [!TIP] / [!IMPORTANT] / [!WARNING] / [!CAUTION]` render
   as colored admonition boxes.
+- ` ```mermaid ` — Mermaid diagrams → SVG (`securityLevel: strict`, adopted via
+  DOMParser, no innerHTML). The ~3.5 MB Mermaid build is **vendored and lazy-loaded**
+  — fetched only the first time a diagram appears.
 
 JSON blocks become DOM nodes; malformed input falls back to a plain code block, so
 nothing is lost. Turn rendering off (view raw) with **⚙ → Render rich blocks**.
