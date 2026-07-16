@@ -66,6 +66,10 @@ prints a pointer. To link the app to a host, pair once (token from the app):
 - When an agent is **blocked wanting to Edit/Write a file**, the approval card
   shows the **proposed change as a diff** (old→new), so you approve knowing what
   it'll do — not just the filename.
+- **Rich blocks** — agents can emit fenced blocks that render inline as live UI:
+  `herdview-card` (titled card + progress bars), `herdview-chart` (bar/line), and
+  `html-widget` (arbitrary HTML in a sandboxed, network-blocked iframe). Toggle
+  rendering off (show raw) via **⚙ → Render rich blocks**. See "Rich blocks" below.
 - When you switch tabs, the **browser-tab title badges** the count of agents that
   need you — `(N) herdview` — and clears when you return.
 
@@ -113,6 +117,28 @@ Run the tests (Go unit + Playwright browser e2e) with `sh scripts/test.sh`.
 | `GET /api/pane/diff?pane=ID&session=S` | the agent repo's uncommitted working diff (+ `--stat`, untracked) |
 | `POST /api/pane/send?pane=ID&session=S` | `{text}` → type + Enter into the pane |
 | `POST /api/pane/key?pane=ID&session=S` | `{keys:[...]}` → raw keystrokes (menus) |
+
+## Rich blocks (agent-emitted)
+
+Agents produce rich output by writing a fenced code block in their normal message;
+herdview upgrades it to a live element in the chat bubble (no artifact, no new tab):
+
+- ` ```herdview-card ` — JSON `{title, status, rows:[{label,value}], progress:[{label,value,max}]}`
+- ` ```herdview-chart ` — JSON `{type:"bar", data:[{label,value}]}` or `{type:"line", points:[…]}`
+- ` ```html-widget ` — raw HTML/SVG/canvas, rendered in a **sandboxed iframe**
+  (`sandbox="allow-scripts"`, CSP `default-src 'none'` → no network, no page access),
+  auto-sized to its content.
+
+JSON blocks become DOM nodes; malformed input falls back to a plain code block, so
+nothing is lost. Turn rendering off (view raw) with **⚙ → Render rich blocks**.
+
+**Teaching agents to use them:** the `herdview-blocks` **skill** (in this repo at
+`.claude/skills/herdview-blocks/`) documents the formats and when to use them. It
+ships with the plugin — `herdr plugin install` clones the whole repo, so the skill
+lands at `~/.config/herdr/plugins/github/orchard.herdview-*/.claude/skills/herdview-blocks/`.
+It is **not auto-loaded**; point your project's `CLAUDE.md` at it (glob that path,
+the hash suffix changes per install) so agents load it when herdview is present. The
+skill keys off `HERDR_ENV`, so it only kicks in inside a herdr session.
 
 ## Security
 

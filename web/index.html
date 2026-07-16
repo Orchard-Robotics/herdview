@@ -186,6 +186,33 @@
   .bubble .md-table td:not(:first-child),.bubble .md-table th:not(:first-child){font-variant-numeric:tabular-nums;}
   .msg.user .bubble .md-table th,.msg.user .bubble .md-table td{border-color:rgba(255,255,255,.3);}
   .msg.user .bubble .md-table th,.msg.user .bubble .md-table tbody tr:nth-child(even) td{background:rgba(255,255,255,.12);}
+  /* herdview rich blocks (```herdview-card / ```herdview-chart / ```html-widget) */
+  .bubble .hv-card,.bubble .hv-chart{border:1px solid var(--border);border-radius:11px;background:var(--surface);padding:.6rem .7rem;margin:.45rem 0;}
+  .hv-cardh{display:flex;justify-content:space-between;align-items:center;gap:.5rem;margin-bottom:.35rem;}
+  .hv-cardt{font-weight:650;font-size:.9rem;}
+  .hv-st{font-family:var(--mono);font-size:.6rem;text-transform:uppercase;letter-spacing:.05em;padding:.15rem .45rem;border-radius:999px;flex:0 0 auto;}
+  .hv-st-ok,.hv-st-info{background:var(--accent-soft);color:var(--accent-ink);}
+  .hv-st-warn{background:rgba(230,150,20,.18);color:var(--working);}
+  .hv-st-error{background:var(--blocked-soft);color:var(--blocked);}
+  .hv-kv{display:flex;justify-content:space-between;gap:1rem;font-size:.8rem;padding:.2rem 0;border-top:1px solid var(--border);}
+  .hv-kv:first-of-type{border-top:none;}
+  .hv-k{color:var(--muted);} .hv-v{font-family:var(--mono);text-align:right;overflow-wrap:anywhere;font-variant-numeric:tabular-nums;}
+  .hv-prog{margin-top:.5rem;}
+  .hv-progt{display:flex;justify-content:space-between;gap:.5rem;font-size:.72rem;color:var(--muted);margin-bottom:.2rem;}
+  .hv-progn{font-family:var(--mono);font-variant-numeric:tabular-nums;}
+  .hv-bar{height:7px;border-radius:999px;background:var(--surface-2);overflow:hidden;}
+  .hv-barf{height:100%;background:var(--accent);border-radius:999px;transition:width .3s ease;}
+  .hv-chartt{font-weight:650;font-size:.82rem;margin-bottom:.45rem;}
+  .hv-chartc{font-family:var(--mono);font-size:.66rem;color:var(--faint);margin-top:.3rem;}
+  .hv-brow{display:flex;align-items:center;gap:.5rem;margin:.28rem 0;}
+  .hv-bl{flex:0 0 32%;font-size:.74rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .hv-btrack{flex:1;height:14px;background:var(--surface-2);border-radius:5px;overflow:hidden;}
+  .hv-bfill{height:100%;background:var(--accent);border-radius:5px;min-width:2px;}
+  .hv-bv{flex:0 0 auto;font-family:var(--mono);font-size:.74rem;font-variant-numeric:tabular-nums;}
+  .hv-spark{width:100%;height:60px;display:block;}
+  .hv-sparkl{fill:none;stroke:var(--accent);stroke-width:2;vector-effect:non-scaling-stroke;}
+  .hv-sparka{fill:var(--accent-soft);stroke:none;}
+  .bubble .hv-widget{width:100%;border:1px solid var(--border);border-radius:11px;background:var(--surface);margin:.45rem 0;height:120px;display:block;}
   .tools{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem;}
   .toolchip{font-family:var(--mono);font-size:.63rem;background:var(--surface-2);border:1px solid var(--border);
     color:var(--muted);border-radius:6px;padding:.12rem .4rem;}
@@ -370,6 +397,116 @@
     const cells = splitRow(line);
     return cells.length > 0 && cells.every(c => /^:?-+:?$/.test(c));
   }
+  // ---- herdview rich blocks: agents emit a fenced block (```herdview-card /
+  // ```herdview-chart / ```html-widget) and we upgrade it to a live element in
+  // the bubble. All safe: structured JSON → DOM nodes, or a sandboxed iframe.
+  // Toggle off (view raw) via the ⚙ setting; bad input falls back to raw code.
+  function richEnabled(){ try{ return localStorage.getItem("herdview:rich") !== "0"; }catch{ return true; } }
+
+  function hvCard(s){
+    const card = document.createElement("div"); card.className = "hv-card";
+    if(s.title || (s.status && s.status !== "none")){
+      const h = document.createElement("div"); h.className = "hv-cardh";
+      const t = document.createElement("span"); t.className = "hv-cardt"; t.textContent = s.title || ""; h.appendChild(t);
+      if(s.status && s.status !== "none"){
+        const ok = ["ok","warn","error","info"].includes(s.status) ? s.status : "info";
+        const pill = document.createElement("span"); pill.className = "hv-st hv-st-" + ok; pill.textContent = s.status; h.appendChild(pill);
+      }
+      card.appendChild(h);
+    }
+    (s.rows || []).forEach(r => {
+      const row = document.createElement("div"); row.className = "hv-kv";
+      const l = document.createElement("span"); l.className = "hv-k"; l.textContent = r.label != null ? String(r.label) : "";
+      const v = document.createElement("span"); v.className = "hv-v"; v.textContent = r.value != null ? String(r.value) : "";
+      row.append(l, v); card.appendChild(row);
+    });
+    (s.progress || []).forEach(p => {
+      const max = Number(p.max) > 0 ? Number(p.max) : 100;
+      const val = Math.max(0, Math.min(Number(p.value) || 0, max));
+      const pct = Math.round(val / max * 100);
+      const wrap = document.createElement("div"); wrap.className = "hv-prog";
+      const top = document.createElement("div"); top.className = "hv-progt";
+      const l = document.createElement("span"); l.textContent = p.label != null ? String(p.label) : "";
+      const n = document.createElement("span"); n.className = "hv-progn"; n.textContent = p.text != null ? String(p.text) : (pct + "%");
+      top.append(l, n); wrap.appendChild(top);
+      const bar = document.createElement("div"); bar.className = "hv-bar";
+      const fill = document.createElement("div"); fill.className = "hv-barf"; fill.style.width = pct + "%";
+      bar.appendChild(fill); wrap.appendChild(bar); card.appendChild(wrap);
+    });
+    return card;
+  }
+
+  const SVGNS = "http://www.w3.org/2000/svg";
+  function svgEl(tag, attrs){ const e = document.createElementNS(SVGNS, tag); for(const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+  function hvChart(s){
+    const box = document.createElement("div"); box.className = "hv-chart";
+    if(s.title){ const t = document.createElement("div"); t.className = "hv-chartt"; t.textContent = s.title; box.appendChild(t); }
+    const type = (s.type || "bar").toLowerCase();
+    if(type === "line" || type === "sparkline"){
+      let pts = (Array.isArray(s.points) ? s.points : (s.data || []).map(d => d && d.value)).map(Number).filter(n => !isNaN(n));
+      if(pts.length){
+        const W = 300, H = 60, pad = 4, min = Math.min(...pts), max = Math.max(...pts), span = (max - min) || 1;
+        const step = pts.length > 1 ? (W - 2 * pad) / (pts.length - 1) : 0;
+        const co = pts.map((p, i) => [pad + i * step, H - pad - ((p - min) / span) * (H - 2 * pad)]);
+        const d = co.map((c, i) => (i ? "L" : "M") + c[0].toFixed(1) + " " + c[1].toFixed(1)).join(" ");
+        const svg = svgEl("svg", { viewBox: "0 0 " + W + " " + H, class: "hv-spark", preserveAspectRatio: "none" });
+        svg.appendChild(svgEl("path", { d: d + " L " + co[co.length - 1][0].toFixed(1) + " " + (H - pad) + " L " + pad + " " + (H - pad) + " Z", class: "hv-sparka" }));
+        svg.appendChild(svgEl("path", { d: d, class: "hv-sparkl" }));
+        box.appendChild(svg);
+        const cap = document.createElement("div"); cap.className = "hv-chartc"; cap.textContent = min + " – " + max; box.appendChild(cap);
+      }
+    } else { // bar
+      const data = (s.data || []).map(d => ({ label: String(d.label != null ? d.label : ""), value: Number(d.value) || 0 }));
+      const max = Math.max(1, ...data.map(d => Math.abs(d.value)));
+      data.forEach(d => {
+        const row = document.createElement("div"); row.className = "hv-brow";
+        const l = document.createElement("span"); l.className = "hv-bl"; l.textContent = d.label;
+        const track = document.createElement("div"); track.className = "hv-btrack";
+        const fill = document.createElement("div"); fill.className = "hv-bfill"; fill.style.width = (Math.abs(d.value) / max * 100) + "%";
+        track.appendChild(fill);
+        const v = document.createElement("span"); v.className = "hv-bv"; v.textContent = String(d.value);
+        row.append(l, track, v); box.appendChild(row);
+      });
+    }
+    return box;
+  }
+
+  function hvWidget(htmlStr){
+    const cs = getComputedStyle(document.documentElement);
+    const ink = (cs.getPropertyValue("--ink") || "#222").trim();
+    const iframe = document.createElement("iframe");
+    iframe.className = "hv-widget";
+    iframe.setAttribute("sandbox", "allow-scripts");          // no allow-same-origin: fully isolated
+    iframe.setAttribute("referrerpolicy", "no-referrer");
+    iframe.setAttribute("loading", "lazy");
+    iframe.title = "widget";
+    const csp = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; script-src \'unsafe-inline\'; img-src data:; font-src data:">';
+    const reset = "<style>html,body{margin:0;padding:0;font-family:system-ui,-apple-system,sans-serif;color:" + ink + ";background:transparent;font-size:14px;line-height:1.4}*{box-sizing:border-box}</style>";
+    const resizer = "<scr" + "ipt>(function(){function h(){var b=document.body,e=document.documentElement;parent.postMessage({__hvH:Math.max(b.scrollHeight,e.scrollHeight,b.offsetHeight)},'*')}addEventListener('load',h);addEventListener('resize',h);try{new MutationObserver(h).observe(document.documentElement,{subtree:true,childList:true,attributes:true})}catch(e){}setTimeout(h,60);setTimeout(h,400)})()</scr" + "ipt>";
+    iframe.srcdoc = "<!doctype html><html><head><meta charset=utf-8>" + csp + reset + "</head><body>" + htmlStr + resizer + "</body></html>";
+    return iframe;
+  }
+
+  // Auto-size widget iframes from their reported content height (one listener).
+  window.addEventListener("message", (e) => {
+    const h = e && e.data && e.data.__hvH;
+    if(typeof h !== "number") return;
+    document.querySelectorAll("iframe.hv-widget").forEach(f => {
+      if(f.contentWindow === e.source) f.style.height = Math.min(Math.max(h, 36), Math.round(window.innerHeight * 0.7)) + "px";
+    });
+  });
+
+  function renderRichBlock(parent, lang, content){
+    let el = null;
+    try {
+      if(lang === "herdview-card") el = hvCard(JSON.parse(content));
+      else if(lang === "herdview-chart") el = hvChart(JSON.parse(content));
+      else if(lang === "html-widget") el = hvWidget(content);
+    } catch(e){ return false; }
+    if(el){ parent.appendChild(el); return true; }
+    return false;
+  }
+
   function renderMarkdown(parent, text){
     const lines = (text || "").split("\n");
     let i = 0, list = null;
@@ -377,11 +514,15 @@
     while(i < lines.length){
       const line = lines[i];
       if(/^\s*```/.test(line)){                                   // fenced code
-        closeList(); i++; const buf = [];
+        closeList();
+        const lang = line.replace(/^\s*```/, "").trim().split(/\s+/)[0].toLowerCase();
+        i++; const buf = [];
         while(i < lines.length && !/^\s*```\s*$/.test(lines[i])){ buf.push(lines[i]); i++; }
         i++;
+        const content = buf.join("\n");
+        if(richEnabled() && renderRichBlock(parent, lang, content)) continue;   // herdview rich block
         const pre = document.createElement("pre"); pre.className = "md-code";
-        const code = document.createElement("code"); code.textContent = buf.join("\n");
+        const code = document.createElement("code"); code.textContent = content;
         pre.appendChild(code); parent.appendChild(pre); continue;
       }
       if(line.indexOf("|") >= 0 && i+1 < lines.length && isDelim(lines[i+1])){   // GFM table
@@ -1027,6 +1168,7 @@
     const [chosenSession, setChosenSession] = useState(null);   // set once a session gate card is picked
     const [selectedPane, setSelectedPane] = useState(null);     // selected agent within the active session
     const [sheetOpen, setSheetOpen] = useState(false);
+    const [settingsOpen, setSettingsOpen] = useState(false);
 
     const list = agents || [];
     useTabBadge(list.filter(a => a.agent_status === "blocked").length);
@@ -1114,6 +1256,7 @@
         <h1 id="title">${title}</h1>
         <span class="count" id="count">${count}</span>
         <button class="newwt" id="newwt" type="button" title="new worktree" hidden=${!newwtVis} onClick=${() => setSheetOpen(true)}>＋</button>
+        <button class="newwt" id="settings" type="button" title="settings" onClick=${() => setSettingsOpen(true)}>⚙</button>
       </header>
       ${body}
       ${sheetOpen ? html`<div class="sheet-ov" onClick=${e => { if(e.target === e.currentTarget) setSheetOpen(false); }}>
@@ -1122,6 +1265,15 @@
           <button class="sheet-b" data-act="agent" onClick=${() => { setSheetOpen(false); newAgent(); }}>＋ New agent<span>a fresh tab running Claude — no branch</span></button>
           <button class="sheet-b" data-act="worktree" onClick=${() => { setSheetOpen(false); newWorktree(); }}>⎇ New worktree<span>new git branch + a Claude agent</span></button>
           <button class="sheet-b cancel" onClick=${() => setSheetOpen(false)}>Cancel</button>
+        </div>
+      </div>` : null}
+      ${settingsOpen ? html`<div class="sheet-ov" onClick=${e => { if(e.target === e.currentTarget) setSettingsOpen(false); }}>
+        <div class="sheet">
+          <div class="sheet-h">settings</div>
+          <button class="sheet-b" onClick=${() => { try{ localStorage.setItem("herdview:rich", richEnabled() ? "0" : "1"); }catch{} location.reload(); }}>
+            ${richEnabled() ? "✓ " : ""}Render rich blocks<span>charts, cards & html widgets agents emit (off = show raw code)</span>
+          </button>
+          <button class="sheet-b cancel" onClick=${() => setSettingsOpen(false)}>Cancel</button>
         </div>
       </div>` : null}
     </${Fragment}>`;
