@@ -223,6 +223,8 @@
   .permcard{background:var(--blocked-soft);border:1px solid var(--blocked);border-radius:12px;padding:.75rem .85rem;}
   .permh{font-family:var(--mono);font-size:.68rem;letter-spacing:.05em;color:var(--blocked);margin-bottom:.35rem;}
   .permname{font-weight:640;font-size:.92rem;}
+  .permpath{font-weight:400;font-size:.72rem;color:var(--muted);font-family:var(--mono);}
+  .permcard .diffbody{margin:.35rem 0 .2rem;max-height:34vh;overflow:auto;}
   .permcmd{margin:.35rem 0 0;background:var(--code-bg);border:1px solid var(--border);border-radius:8px;
     padding:.55rem .65rem;font-family:var(--mono);font-size:.76rem;line-height:1.45;
     white-space:pre-wrap;word-break:break-word;overflow:auto;max-height:38vh;}
@@ -932,10 +934,15 @@
         ` : html`
           ${blockedPending && blockedPending.length ? html`<div class="permcard">
             <div class="permh">⏸ Waiting for you — wants to:</div>
-            ${blockedPending.map((t, i) => html`
-              <div class="permname" key=${"n" + i}>${t.name}</div>
-              ${t.summary ? html`<pre class="permcmd" key=${"c" + i}>${t.summary}</pre>` : null}
-            `)}
+            ${blockedPending.map((t, i) => t.diff
+              ? html`<div key=${"p" + i}>
+                  <div class="permname">${t.name}${t.summary ? html` <span class="permpath">${t.summary}</span>` : null}</div>
+                  <${DiffBody} text=${t.diff} />
+                </div>`
+              : html`<div key=${"p" + i}>
+                  <div class="permname">${t.name}</div>
+                  ${t.summary ? html`<pre class="permcmd">${t.summary}</pre>` : null}
+                </div>`)}
           </div>` : null}
           <div class="permbtns">
             <button class="key go" type="button" onClick=${() => { key("Enter"); toast("Approved ✓"); }}>✓ Approve</button>

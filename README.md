@@ -63,6 +63,9 @@ prints a pointer. To link the app to a host, pair once (token from the app):
   side list of any **artifact links** the agent produced.
 - **⑂ diff** — a colored view of the agent's **uncommitted changes** (working diff
   + `--stat` summary + untracked files), rendered on the phone.
+- When an agent is **blocked wanting to Edit/Write a file**, the approval card
+  shows the **proposed change as a diff** (old→new), so you approve knowing what
+  it'll do — not just the filename.
 - When you switch tabs, the **browser-tab title badges** the count of agents that
   need you — `(N) herdview` — and clears when you return.
 

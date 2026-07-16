@@ -647,6 +647,63 @@ type uiMsg struct {
 type toolInfo struct {
 	Name    string `json:"name"`
 	Summary string `json:"summary,omitempty"`
+	Diff    string `json:"diff,omitempty"` // proposed change for Edit/Write/MultiEdit (so a blocked edit shows WHAT it'll do)
+}
+
+// toolEditPreview renders the proposed change of an Edit/Write/MultiEdit as a
+// simple diff (old lines as "-", new/content lines as "+") so a blocked agent's
+// pending edit shows what it will change, not just the file path. Size-capped.
+func toolEditPreview(name string, input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal(input, &m) != nil {
+		return ""
+	}
+	str := func(k string) string { s, _ := m[k].(string); return s }
+	block := func(prefix, text string) string {
+		if text == "" {
+			return ""
+		}
+		var b strings.Builder
+		for _, ln := range strings.Split(text, "\n") {
+			b.WriteString(prefix)
+			b.WriteString(ln)
+			b.WriteByte('\n')
+		}
+		return b.String()
+	}
+	var sb strings.Builder
+	switch name {
+	case "Edit":
+		sb.WriteString(block("-", str("old_string")))
+		sb.WriteString(block("+", str("new_string")))
+	case "MultiEdit":
+		edits, _ := m["edits"].([]any)
+		for i, e := range edits {
+			em, _ := e.(map[string]any)
+			if em == nil {
+				continue
+			}
+			if i > 0 {
+				sb.WriteString("@@\n")
+			}
+			o, _ := em["old_string"].(string)
+			n, _ := em["new_string"].(string)
+			sb.WriteString(block("-", o))
+			sb.WriteString(block("+", n))
+		}
+	case "Write":
+		sb.WriteString(block("+", str("content")))
+	default:
+		return ""
+	}
+	s := strings.TrimRight(sb.String(), "\n")
+	if len(s) > 20000 {
+		s = s[:20000] + "\n… (truncated)"
+	}
+	return s
 }
 
 func toolSummary(name string, input json.RawMessage) string {
@@ -758,7 +815,7 @@ func parseTranscript(data []byte) []uiMsg {
 						txt = append(txt, b.Text)
 					}
 					if b.Type == "tool_use" && b.Name != "" {
-						tools = append(tools, toolInfo{Name: b.Name, Summary: toolSummary(b.Name, b.Input)})
+						tools = append(tools, toolInfo{Name: b.Name, Summary: toolSummary(b.Name, b.Input), Diff: toolEditPreview(b.Name, b.Input)})
 					}
 				}
 				if len(txt) > 0 || len(tools) > 0 {
