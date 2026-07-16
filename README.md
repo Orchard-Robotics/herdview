@@ -140,6 +140,30 @@ It is **not auto-loaded**; point your project's `CLAUDE.md` at it (glob that pat
 the hash suffix changes per install) so agents load it when herdview is present. The
 skill keys off `HERDR_ENV`, so it only kicks in inside a herdr session.
 
+Drop this into your repo's `CLAUDE.md`:
+
+````markdown
+## herdview rich output (when your session is mirrored)
+
+When running in a herdr session (`HERDR_ENV` is set) with the **herdview** plugin
+installed, prefer herdview's **rich blocks** for visual output — they render inline
+in the phone/desktop mirror instead of as a wall of text or a heavy artifact.
+
+- The format guide isn't auto-discovered, so **read it once when it's relevant**
+  (summarizing results/metrics, a comparison, progress, or a small widget). Find it
+  via glob (the hash suffix changes per install):
+  ```
+  ls ~/.config/herdr/plugins/github/orchard.herdview-*/.claude/skills/herdview-blocks/SKILL.md
+  ```
+  Read that file and follow it. If the glob doesn't resolve, herdview isn't
+  installed → skip this and write normally.
+- It documents three fences: ` ```herdview-card ` (titled card + progress bars),
+  ` ```herdview-chart ` (bar/line), and ` ```html-widget ` (arbitrary HTML in a
+  sandboxed iframe). Keep them compact; they render inline in a chat bubble.
+- To turn this off: delete this section, or toggle it off in the viewer
+  (⚙ → "Render rich blocks").
+````
+
 ## Security
 
 herdview steers terminals, so treat the port as sensitive.
