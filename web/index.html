@@ -74,6 +74,8 @@
   .card.blocked{border-left-color:var(--blocked);}
   .card.working{border-left-color:var(--working);}
   .card.idle{border-left-color:var(--idle);}
+  /* the agent currently open in the detail pane (desktop two-pane) */
+  .card.selected{background:var(--accent-soft);box-shadow:0 0 0 2px var(--accent);}
   .row{display:flex;align-items:center;justify-content:space-between;gap:.6rem;}
   .name{font-weight:620;font-size:1rem;}
   .name .chev{color:var(--faint);font-weight:400;}
@@ -577,9 +579,9 @@
     </div>`;
   }
 
-  function AgentCard({ a, showBranch, onSelect, onRename }){
+  function AgentCard({ a, showBranch, selected, onSelect, onRename }){
     const s = a.agent_status || "unknown";
-    return html`<div class=${"card " + s} data-pane=${a.pane_id} data-session=${a.session || ""} onClick=${() => onSelect(a)}>
+    return html`<div class=${"card " + s + (selected ? " selected" : "")} data-pane=${a.pane_id} data-session=${a.session || ""} onClick=${() => onSelect(a)}>
       <div class="row">
         <span class="name">${(a.name || a.agent) || "agent"} <span class="chev">›</span></span>
         <span class=${"pill " + s}><span class="dot"></span>${s}</span>
@@ -605,7 +607,7 @@
   }
 
   // Agent grid for one session; branch-grouped only when there's more than one.
-  function Grid({ agents, onSelect, onRename }){
+  function Grid({ agents, selected, onSelect, onRename }){
     if(!agents.length) return html`<div class="empty">No agents in this session.</div>`;
     const groups = {};
     for(const a of agents){ const k = a.branch || "no branch"; (groups[k] = groups[k] || []).push(a); }
@@ -614,7 +616,7 @@
     return html`<div class="scroller">
       ${keys.map(k => html`
         ${grouped ? html`<div class="group" key=${"g:" + k}>⎇ ${k} · ${groups[k].length}</div>` : null}
-        ${groups[k].map(a => html`<${AgentCard} key=${a.pane_id} a=${a} showBranch=${!grouped} onSelect=${onSelect} onRename=${onRename} />`)}
+        ${groups[k].map(a => html`<${AgentCard} key=${a.pane_id} a=${a} showBranch=${!grouped} selected=${a.pane_id === selected} onSelect=${onSelect} onRename=${onRename} />`)}
       `)}
     </div>`;
   }
@@ -1091,7 +1093,7 @@
     } else {
       body = html`<main class=${wide ? "wide-split" : ""}>
         <div class="split" data-sel=${selAgent ? "1" : "0"}>
-          <div class="pane-list"><${Grid} agents=${mine} onSelect=${a => setSelectedPane(a.pane_id)} onRename=${renameAgent} /></div>
+          <div class="pane-list"><${Grid} agents=${mine} selected=${selectedPane} onSelect=${a => setSelectedPane(a.pane_id)} onRename=${renameAgent} /></div>
           <div class="pane-detail">
             ${selAgent
               ? html`<${Detail} key=${(activeSession||"") + ":" + selectedPane} agent=${selAgent} session=${activeSession} />`

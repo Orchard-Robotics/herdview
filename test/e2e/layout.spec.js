@@ -31,6 +31,21 @@ test("wide: agent list and selected chat are visible at the same time", async ({
   await expect(page.locator(".card[data-pane]")).toHaveCount(3);
 });
 
+test("wide: the open agent is highlighted in the left list", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await page.goto("/");
+
+  await page.locator('[data-pane="w3:p1"]').click();
+  await expect(page.locator('.card[data-pane="w3:p1"]')).toHaveClass(/selected/);
+  await expect(page.locator(".card.selected")).toHaveCount(1); // only the open one
+
+  // switching selection moves the highlight
+  await page.locator('[data-pane="w1:p5"]').click();
+  await expect(page.locator('.card[data-pane="w1:p5"]')).toHaveClass(/selected/);
+  await expect(page.locator('.card[data-pane="w3:p1"]')).not.toHaveClass(/selected/);
+  await expect(page.locator(".card.selected")).toHaveCount(1);
+});
+
 test("wide: the list keeps polling/updating while a chat is open", async ({ page }) => {
   await page.setViewportSize({ width: 1100, height: 800 });
   await page.goto("/");
