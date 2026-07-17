@@ -410,3 +410,49 @@ func TestParseTranscript(t *testing.T) {
 		t.Errorf("bubble 1 tools = %+v", out[1].Tools)
 	}
 }
+
+// resetDbg clears the lazy key-log singleton between tests.
+func resetDbg() {
+	dbgMu.Lock()
+	if dbgFile != nil {
+		dbgFile.Close()
+		dbgFile = nil
+	}
+	dbgOpened = false
+	dbgMu.Unlock()
+}
+
+func TestDebugKeysLog(t *testing.T) {
+	logp := filepath.Join(t.TempDir(), "keys.log")
+	t.Setenv("HERDVIEW_DEBUG_KEYS", logp)
+	t.Setenv("HERDVIEW_DEBUG_KEYS_PROMPT", "") // no snapshot (would need a live herdr)
+	resetDbg()
+	t.Cleanup(resetDbg)
+
+	req := httptest.NewRequest("POST", "/api/pane/key?session=s1", nil)
+	logSend(req, "", "send-keys", "w1:p1", "1")
+	logSend(req, "", "send-keys", "w1:p1", "Enter")
+
+	data, err := os.ReadFile(logp)
+	if err != nil {
+		t.Fatalf("reading key log: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, "send-keys\tpane=w1:p1\tsession=s1") {
+		t.Errorf("log missing tagged entry:\n%s", s)
+	}
+	if n := strings.Count(s, "\n"); n != 2 {
+		t.Errorf("want 2 logged lines, got %d:\n%s", n, s)
+	}
+}
+
+func TestDebugKeysDisabled(t *testing.T) {
+	t.Setenv("HERDVIEW_DEBUG_KEYS", "")
+	resetDbg()
+	t.Cleanup(resetDbg)
+	if debugKeysPath() != "" {
+		t.Fatal("expected logging disabled when env unset")
+	}
+	// Must be a safe no-op (no panic, no file created).
+	logSend(nil, "", "send-keys", "w1:p1", "1")
+}

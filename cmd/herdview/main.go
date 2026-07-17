@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -329,6 +330,115 @@ func handleRead(w http.ResponseWriter, r *http.Request) {
 
 // handleSend types text into a pane and submits it (Enter) — a prompt to a
 // running agent. This steers an existing session; it never starts a new one.
+// --- dev key logging -------------------------------------------------------
+// HERDVIEW_DEBUG_KEYS records every keystroke/text herdview sends into a pane —
+// the tool that makes steering bugs (approvals, menu navigation) debuggable,
+// since it captures EXACTLY what herdview emitted and when. Unset = disabled
+// (zero overhead). Set to a file path to log there, or to "1"/"true"/"on" to
+// log to <stateDir>/keys.log. HERDVIEW_DEBUG_KEYS_PROMPT=1 additionally snapshots
+// the pane's parsed prompt just before each send, so you can see what the user
+// was answering — this costs one extra herdr read per send, so it slightly
+// perturbs timing; only enable it when chasing a prompt-correlation bug. Do NOT
+// enable on a shared deploy: the log contains text typed to agents.
+var (
+	dbgMu     sync.Mutex
+	dbgFile   *os.File
+	dbgOpened bool
+)
+
+func debugKeysPath() string {
+	switch v := os.Getenv("HERDVIEW_DEBUG_KEYS"); v {
+	case "":
+		return ""
+	case "1", "true", "on", "yes":
+		return filepath.Join(stateDir(), "keys.log")
+	default:
+		return v // an explicit path
+	}
+}
+
+var dbgSanitize = strings.NewReplacer("\n", "\\n", "\r", "\\r", "\t", "\\t")
+
+// logSend appends one dev-log line for a steering action. No-op unless
+// HERDVIEW_DEBUG_KEYS is set; it never blocks or fails the send.
+func logSend(r *http.Request, socket, event, pane, payload string) {
+	path := debugKeysPath()
+	if path == "" {
+		return
+	}
+	// Snapshot the on-screen prompt BEFORE logging so the line records what the
+	// keystroke was answering (opt-in; adds a herdr read per send).
+	var prompt string
+	if os.Getenv("HERDVIEW_DEBUG_KEYS_PROMPT") != "" {
+		prompt = snapshotPrompt(socket, pane)
+	}
+	dbgMu.Lock()
+	defer dbgMu.Unlock()
+	if !dbgOpened {
+		dbgOpened = true
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
+			dbgFile, _ = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		}
+	}
+	if dbgFile == nil {
+		return
+	}
+	session, from := "", ""
+	if r != nil {
+		session = r.URL.Query().Get("session")
+		from = r.RemoteAddr
+	}
+	line := fmt.Sprintf("%s\t%s\tpane=%s\tsession=%s\tfrom=%s\t%s",
+		time.Now().Format("2006-01-02T15:04:05.000"), event, pane, session, from, dbgSanitize.Replace(payload))
+	if prompt != "" {
+		line += "\ton-screen=[" + dbgSanitize.Replace(prompt) + "]"
+	}
+	fmt.Fprintln(dbgFile, line)
+}
+
+// snapshotPrompt returns a compact description of the selector currently on the
+// pane, for correlating a keystroke with what it answered. Best-effort.
+func snapshotPrompt(socket, pane string) string {
+	out, err := runHerdrOn(socket, "pane", "read", pane, "--source", "visible", "--lines", "60", "--format", "text")
+	if err != nil {
+		return ""
+	}
+	q, opts, ok := parseChoices(string(out))
+	if !ok {
+		return "no-selector"
+	}
+	parts := make([]string, 0, len(opts))
+	for _, o := range opts {
+		mark := ""
+		if o.Selected {
+			mark = "*" // the ❯ cursor
+		}
+		parts = append(parts, fmt.Sprintf("%s%d:%s", mark, o.N, o.Label))
+	}
+	return q + " :: " + strings.Join(parts, " | ")
+}
+
+// handleDebugKeys tails the dev key log so it's viewable from the browser/phone
+// without SSH. 404 when logging is disabled.
+func handleDebugKeys(w http.ResponseWriter, r *http.Request) {
+	path := debugKeysPath()
+	if path == "" {
+		http.Error(w, "key logging disabled — start herdview with HERDVIEW_DEBUG_KEYS=1", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintln(w, "(no keystrokes logged yet)")
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if n := len(lines); n > 300 {
+		lines = lines[n-300:]
+	}
+	fmt.Fprintln(w, strings.Join(lines, "\n"))
+}
+
 func handleSend(w http.ResponseWriter, r *http.Request) {
 	socket, pane, ok := resolveTarget(w, r)
 	if !ok {
@@ -341,6 +451,7 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "expected JSON {text}", http.StatusBadRequest)
 		return
 	}
+	logSend(r, socket, "send-text", pane, body.Text)
 	if _, err := runHerdrOn(socket, "pane", "send-text", pane, body.Text); err != nil {
 		http.Error(w, "send failed: "+err.Error(), http.StatusBadGateway)
 		return
@@ -366,6 +477,7 @@ func handleKey(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "expected JSON {keys:[...]}", http.StatusBadRequest)
 		return
 	}
+	logSend(r, socket, "send-keys", pane, strings.Join(body.Keys, " "))
 	args := append([]string{"pane", "send-keys", pane}, body.Keys...)
 	if _, err := runHerdrOn(socket, args...); err != nil {
 		http.Error(w, "send-keys failed: "+err.Error(), http.StatusBadGateway)
@@ -1308,6 +1420,7 @@ func main() {
 	mux.HandleFunc("/api/pane/rename", handleRename)
 	mux.HandleFunc("/api/worktree", handleNewWorktree)
 	mux.HandleFunc("/api/agent", handleNewAgent)
+	mux.HandleFunc("/api/debug/keys", handleDebugKeys)
 	mux.Handle("/", noCache(http.FileServer(http.FS(web.FS))))
 
 	// loopback, this box's hostname, and private/tailnet IPs are always allowed

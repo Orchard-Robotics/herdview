@@ -96,6 +96,26 @@ herdr plugin pane open --plugin orchard.herdview --entrypoint server
 
 Run the tests (Go unit + Playwright browser e2e) with `sh scripts/test.sh`.
 
+### Debugging what herdview sends (dev tool)
+
+Steering bugs (approvals, menu navigation) are only debuggable if you know
+*exactly* what herdview typed into a pane and when. Set **`HERDVIEW_DEBUG_KEYS`**
+to turn on a keystroke log:
+
+```sh
+HERDVIEW_DEBUG_KEYS=1 herdview --addr 0.0.0.0:8848   # → <stateDir>/keys.log
+HERDVIEW_DEBUG_KEYS=/tmp/keys.log herdview …          # → an explicit path
+```
+
+Every `send-text`/`send-keys` is logged with a millisecond timestamp, pane,
+session, client IP, and payload — so "one tap = one keystroke" is verifiable at
+a glance. Add **`HERDVIEW_DEBUG_KEYS_PROMPT=1`** to also snapshot the on-screen
+selector just before each send (what the keystroke was answering); this costs one
+extra herdr read per send, so enable it only while chasing a prompt-correlation
+bug. Tail the log from a browser/phone at **`/api/debug/keys`** (404 when
+disabled). Unset = off, zero overhead. Don't enable on a shared deploy — the log
+records text typed to agents.
+
 ## How it works
 
 | Layer   | Mechanism |
@@ -117,6 +137,7 @@ Run the tests (Go unit + Playwright browser e2e) with `sh scripts/test.sh`.
 | `GET /api/pane/diff?pane=ID&session=S` | the agent repo's uncommitted working diff (+ `--stat`, untracked) |
 | `POST /api/pane/send?pane=ID&session=S` | `{text}` → type + Enter into the pane |
 | `POST /api/pane/key?pane=ID&session=S` | `{keys:[...]}` → raw keystrokes (menus) |
+| `GET /api/debug/keys` | tail of the dev keystroke log (404 unless `HERDVIEW_DEBUG_KEYS` is set) |
 
 ## Rich blocks (agent-emitted)
 
