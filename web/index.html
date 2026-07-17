@@ -149,7 +149,7 @@
     height:min(52vh,420px);}
   .convo{flex:1;min-height:0;border:1px solid var(--border);border-radius:14px;background:var(--surface-2);
     padding:.85rem .7rem;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;touch-action:pan-y;
-    display:flex;flex-direction:column;scroll-behavior:smooth;-webkit-overflow-scrolling:touch;}
+    display:flex;flex-direction:column;-webkit-overflow-scrolling:touch;}
   .msg{display:flex;max-width:82%;margin-top:.5rem;}
   .msg.grouped{margin-top:.14rem;}
   .msg.pending{opacity:.55;}
@@ -920,7 +920,6 @@
     const taRef = useRef(null);
     const convoRef = useRef(null);
     const pinnedRef = useRef(true);      // stay pinned to bottom unless scrolled up
-    const firstPin = useRef(true);       // first pin (open/switch) jumps instantly, no animated scroll
     const workingSince = useRef(null);
     const [sending, setSending] = useState(false);
     const [sentLog, setSentLog] = useState(() => loadSent(session, pane));
@@ -1053,19 +1052,9 @@
     }, [showRun, data, pane, session]);
 
     // Stick to the bottom after any render, but only if the user hasn't scrolled up.
-    useLayoutEffect(() => {
-      const c = convoRef.current;
-      if(!c || !pinnedRef.current) return;
-      if(firstPin.current){                 // open/switch → land at the bottom instantly (no animated scroll)
-        const prev = c.style.scrollBehavior;
-        c.style.scrollBehavior = "auto";
-        c.scrollTop = c.scrollHeight;
-        c.style.scrollBehavior = prev;
-        firstPin.current = false;
-      } else {
-        c.scrollTop = c.scrollHeight;        // live updates keep the CSS smooth scroll
-      }
-    });
+    // Pin to bottom instantly (no smooth scroll — you land AT the bottom, never
+    // watch it scroll there), unless you've scrolled up to read history.
+    useLayoutEffect(() => { const c = convoRef.current; if(c && pinnedRef.current) c.scrollTop = c.scrollHeight; });
 
     function fit(){ const ta = taRef.current; if(!ta) return; ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 128) + "px"; }
     function onScroll(){ const c = convoRef.current; if(c) pinnedRef.current = c.scrollHeight - c.scrollTop - c.clientHeight < 80; }
