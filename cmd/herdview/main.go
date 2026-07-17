@@ -384,31 +384,99 @@ type choice struct {
 }
 
 // choiceRe matches a selector option line: an optional ❯ cursor, then "N. label".
-var choiceRe = regexp.MustCompile(`^\s*(\x{276F})?\s*(\d+)\.\s+(.*\S)\s*$`)
+// The space after the dot is optional — Claude Code sometimes renders an option
+// with no gap (e.g. "2.Yes, and always allow…"); requiring the space silently
+// dropped that option, and the sequential anchoring then dropped the rest of the
+// run after the gap, so the user saw only a subset of the options.
+var choiceRe = regexp.MustCompile(`^\s*(\x{276F})?\s*(\d+)\.\s*(.*\S)\s*$`)
+
+// stripBox removes a leading and/or trailing vertical box-drawing border (and the
+// padding spaces beside it) from a line, so a selector drawn inside a box parses
+// the same as an unboxed one. Non-boxed lines pass through unchanged.
+func stripBox(s string) string {
+	s = strings.TrimRight(s, " ")
+	for _, b := range []string{"│", "┃"} {
+		if strings.HasSuffix(s, b) {
+			s = strings.TrimRight(strings.TrimSuffix(s, b), " ")
+			break
+		}
+	}
+	t := strings.TrimLeft(s, " ")
+	for _, b := range []string{"│", "┃"} {
+		if strings.HasPrefix(t, b) {
+			return strings.TrimLeft(strings.TrimPrefix(t, b), " ")
+		}
+	}
+	return s
+}
 
 // parseChoices extracts the question + numbered options from a pane's terminal
 // text when it's sitting on a Claude selector. ok=false if it isn't one.
 func parseChoices(read string) (question string, opts []choice, ok bool) {
-	// The selector always shows this navigation footer.
-	if !strings.Contains(read, "to navigate") || !strings.Contains(read, "select") {
-		return "", nil, false
-	}
+	// Normalize away any box-drawing border so a boxed prompt (permission / plan
+	// approval) parses the same as an unboxed one (AskUserQuestion picker).
 	lines := strings.Split(read, "\n")
-	firstOpt := -1
+	for i := range lines {
+		lines[i] = stripBox(lines[i])
+	}
+	// Collect every numbered-option line in the visible window, remembering its
+	// source line and whether the ❯ cursor sits on it.
+	type cand struct {
+		line     int
+		n        int
+		label    string
+		selected bool
+	}
+	var cands []cand
 	for i, ln := range lines {
 		m := choiceRe.FindStringSubmatch(ln)
 		if m == nil {
 			continue
 		}
 		n, _ := strconv.Atoi(m[2])
-		opts = append(opts, choice{N: n, Label: strings.TrimSpace(m[3]), Selected: m[1] != ""})
-		if firstOpt < 0 {
-			firstOpt = i
-		}
+		cands = append(cands, cand{i, n, strings.TrimSpace(m[3]), m[1] != ""})
 	}
-	if len(opts) == 0 {
+	if len(cands) == 0 {
 		return "", nil, false
 	}
+	// A pane is on a selector when it shows the navigation footer (the
+	// AskUserQuestion picker) OR a ❯ cursor sits on one of the numbered options
+	// (permission and plan-approval prompts, which have no footer). Requiring one
+	// of these keeps an ordinary numbered list in agent output from being
+	// mistaken for a prompt.
+	joined := strings.Join(lines, "\n")
+	footer := strings.Contains(joined, "to navigate") && strings.Contains(joined, "select")
+	anchor := -1
+	for i, c := range cands {
+		if c.selected {
+			anchor = i
+			break
+		}
+	}
+	if anchor < 0 {
+		if !footer {
+			return "", nil, false
+		}
+		// No cursor but a footer is present: anchor on the last option so we take
+		// the option block that ends at the prompt (bottom of the window).
+		anchor = len(cands) - 1
+	}
+	// The real options form a run numbered 1,2,3,… around the anchor. Content the
+	// agent printed just before the prompt (e.g. a markdown ordered list) must not
+	// be merged in, so expand outward from the anchor only while the option number
+	// stays sequential (±1); this drops stray numbered lines that aren't part of
+	// the actual selector.
+	lo, hi := anchor, anchor
+	for lo > 0 && cands[lo-1].n == cands[lo].n-1 {
+		lo--
+	}
+	for hi < len(cands)-1 && cands[hi+1].n == cands[hi].n+1 {
+		hi++
+	}
+	for _, c := range cands[lo : hi+1] {
+		opts = append(opts, choice{N: c.n, Label: c.label, Selected: c.selected})
+	}
+	firstOpt := cands[lo].line
 	// The question is the last meaningful line above the first option (skipping
 	// separators, box drawing, the ☐ header, and the ❯ input echo).
 	skip := func(s string) bool {

@@ -10,3 +10,4 @@ test/node_modules/
 test/.runtime/
 test/test-results/
 test/playwright-report/
+/test-results/

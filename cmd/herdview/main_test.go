@@ -243,6 +243,103 @@ func TestParseChoices(t *testing.T) {
 	}
 }
 
+// Tool-permission / plan-approval prompts have a ❯ cursor on a numbered option
+// but no "…to navigate…select…" footer, and are often drawn inside a box.
+func TestParseChoicesPermission(t *testing.T) {
+	// Unboxed Bash permission prompt.
+	bash := "Bash command\n" +
+		"  npm test\n" +
+		"  Run the test suite\n" +
+		"\n" +
+		"Do you want to proceed?\n" +
+		"❯ 1. Yes\n" +
+		"  2. Yes, and don't ask again for npm commands in /repo\n" +
+		"  3. No, and tell Claude what to do differently (esc)\n"
+	q, opts, ok := parseChoices(bash)
+	if !ok {
+		t.Fatal("expected the Bash permission prompt to be detected")
+	}
+	if q != "Do you want to proceed?" {
+		t.Errorf("question = %q, want %q", q, "Do you want to proceed?")
+	}
+	if len(opts) != 3 || !opts[0].Selected || opts[0].Label != "Yes" || opts[2].N != 3 {
+		t.Errorf("opts = %+v", opts)
+	}
+
+	// Boxed Edit permission prompt (vertical borders on every line).
+	boxed := "╭────────────────────────────────────────────────╮\n" +
+		"│ Edit file                                        │\n" +
+		"│                                                  │\n" +
+		"│ Do you want to make this edit to main.go?        │\n" +
+		"│ ❯ 1. Yes                                         │\n" +
+		"│   2. Yes, allow all edits this session           │\n" +
+		"│   3. No, and tell Claude what to do differently  │\n" +
+		"╰────────────────────────────────────────────────╯\n"
+	q, opts, ok = parseChoices(boxed)
+	if !ok {
+		t.Fatal("expected the boxed Edit permission prompt to be detected")
+	}
+	if q != "Do you want to make this edit to main.go?" {
+		t.Errorf("boxed question = %q", q)
+	}
+	if len(opts) != 3 || !opts[0].Selected || opts[0].Label != "Yes" {
+		t.Errorf("boxed opts = %+v", opts)
+	}
+
+	// A plain numbered list (no ❯ cursor, no footer) must NOT parse as a picker.
+	if _, _, ok := parseChoices("Here are the steps:\n1. First do this\n2. Then that\n"); ok {
+		t.Error("a plain numbered list should not parse as a picker")
+	}
+
+	// Real capture: an option rendered with NO space after the number
+	// ("2.Yes, …") plus a wrapped continuation line. All three options must
+	// parse — dropping option 2 for the missing space also strands option 3
+	// (the anchoring stops at the 1→3 gap), leaving only "Yes".
+	nospace := "Do you want to proceed?\n" +
+		"❯ 1. Yes\n" +
+		"  2.Yes, and always allow access to tmp/\n" +
+		"    from this project\n" +
+		"  3. No\n" +
+		"\n" +
+		"Esc to cancel · Tab to amend · ctrl+e to explain\n"
+	q, opts, ok = parseChoices(nospace)
+	if !ok {
+		t.Fatal("expected the no-space-after-number prompt to be detected")
+	}
+	if len(opts) != 3 {
+		t.Fatalf("no-space: got %d options, want 3 (option 2 lost its space, stranding 3): %+v", len(opts), opts)
+	}
+	if opts[0].Label != "Yes" || opts[1].N != 2 || opts[1].Label != "Yes, and always allow access to tmp/" || opts[2].Label != "No" {
+		t.Errorf("no-space opts = %+v", opts)
+	}
+
+	// Decoy: the agent printed a numbered list right before the real prompt. Only
+	// the cursor's sequential block should parse — not the stray list above it (a
+	// merge would produce duplicate option numbers and mis-map the tapped digit).
+	decoy := "Here's my plan:\n" +
+		"1. Refactor the parser\n" +
+		"2. Add tests\n" +
+		"3. Update docs\n" +
+		"\n" +
+		"Do you want to proceed?\n" +
+		"❯ 1. Yes\n" +
+		"  2. Yes, and don't ask again\n" +
+		"  3. No, and tell Claude what to do differently (esc)\n"
+	q, opts, ok = parseChoices(decoy)
+	if !ok {
+		t.Fatal("expected the real prompt below the decoy list to be detected")
+	}
+	if q != "Do you want to proceed?" {
+		t.Errorf("decoy question = %q, want %q", q, "Do you want to proceed?")
+	}
+	if len(opts) != 3 {
+		t.Fatalf("decoy: got %d options, want 3 (the stray list must be dropped): %+v", len(opts), opts)
+	}
+	if opts[0].Label != "Yes" || !opts[0].Selected || opts[2].Label != "No, and tell Claude what to do differently (esc)" {
+		t.Errorf("decoy opts = %+v", opts)
+	}
+}
+
 func TestParseTasks(t *testing.T) {
 	read := "some earlier output\n" +
 		"5 tasks (3 done, 2 open)\n" +

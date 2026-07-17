@@ -1163,38 +1163,47 @@
         </div>
       </div>
       <div class="keys" id="keys">
-        ${status === "blocked" ? (choices.options && choices.options.length ? html`
-          <div class="permcard">
-            <div class="permh">⏸ ${choices.question || "Choose an option"}${choices.total > 1 ? ` · question ${choices.index} of ${choices.total}` : ""}</div>
-          </div>
-          <div class="permbtns choices">
-            ${choices.options.map(o => html`
-              <button class="key ${o.n === chosen ? "chosen" : (chosen != null ? "dimmed" : (o.selected ? "go" : ""))}" type="button" key=${o.n}
-                disabled=${chosen != null}
-                onClick=${() => { setChosen(o.n); key(String(o.n)); toast("Chose " + o.n + ". " + o.label); }}>${o.n}. ${o.label}</button>
-            `)}
-          </div>
-          <div class="hint">${chosen != null ? "sent — waiting for the agent…" : "tap an option — it's sent to the agent"}</div>
-        ` : html`
-          ${blockedPending && blockedPending.length ? html`<div class="permcard">
-            <div class="permh">⏸ Waiting for you — wants to:</div>
-            ${blockedPending.map((t, i) => t.diff
-              ? html`<div key=${"p" + i}>
-                  <div class="permname">${t.name}${t.summary ? html` <span class="permpath">${t.summary}</span>` : null}</div>
-                  <${DiffBody} text=${t.diff} />
-                </div>`
-              : html`<div key=${"p" + i}>
-                  <div class="permname">${t.name}</div>
-                  ${t.summary ? html`<pre class="permcmd">${t.summary}</pre>` : null}
-                </div>`)}
-          </div>` : null}
-          <div class="permbtns">
-            <button class="key go" type="button" onClick=${() => { key("Enter"); toast("Approved ✓"); }}>✓ Approve</button>
-            <button class="key" type="button" onClick=${() => key("Down")}>↓</button>
-            <button class="key" type="button" onClick=${() => key("Up")}>↑</button>
-            <button class="key warn" type="button" onClick=${() => { key("Escape"); toast("Denied"); }}>✕ Deny</button>
-          </div>
-        `) : null}
+        ${status === "blocked" ? (() => {
+          // One card describing what the agent wants to do (proposed edits/commands),
+          // then EITHER the prompt's real options (tappable — each tap is one
+          // decision for the one prompt Claude is showing) OR, only if we couldn't
+          // parse the prompt, the generic approve/deny fallback.
+          const hasChoices = choices.options && choices.options.length;
+          const pend = blockedPending && blockedPending.length ? blockedPending : null;
+          return html`
+            ${hasChoices || pend ? html`<div class="permcard">
+              <div class="permh">⏸ ${hasChoices
+                ? (choices.question || "Waiting for you") + (choices.total > 1 ? ` · question ${choices.index} of ${choices.total}` : "")
+                : "Waiting for you — wants to:"}</div>
+              ${pend ? pend.map((t, i) => t.diff
+                ? html`<div key=${"p" + i}>
+                    <div class="permname">${t.name}${t.summary ? html` <span class="permpath">${t.summary}</span>` : null}</div>
+                    <${DiffBody} text=${t.diff} />
+                  </div>`
+                : html`<div key=${"p" + i}>
+                    <div class="permname">${t.name}</div>
+                    ${t.summary ? html`<pre class="permcmd">${t.summary}</pre>` : null}
+                  </div>`) : null}
+            </div>` : null}
+            ${hasChoices ? html`
+              <div class="permbtns choices">
+                ${choices.options.map(o => html`
+                  <button class="key ${o.n === chosen ? "chosen" : (chosen != null ? "dimmed" : (o.selected ? "go" : ""))}" type="button" key=${o.n}
+                    disabled=${chosen != null}
+                    onClick=${() => { setChosen(o.n); key(String(o.n)); toast("Chose " + o.n + ". " + o.label); }}>${o.n}. ${o.label}</button>
+                `)}
+              </div>
+              <div class="hint">${chosen != null ? "sent — waiting for the agent…" : "tap an option — it's sent to the agent"}</div>
+            ` : html`
+              <div class="permbtns">
+                <button class="key go" type="button" onClick=${() => { key("Enter"); toast("Approved ✓"); }}>✓ Approve</button>
+                <button class="key" type="button" onClick=${() => key("Down")}>↓</button>
+                <button class="key" type="button" onClick=${() => key("Up")}>↑</button>
+                <button class="key warn" type="button" onClick=${() => { key("Escape"); toast("Denied"); }}>✕ Deny</button>
+              </div>
+            `}
+          `;
+        })() : null}
       </div>
       <div class="prompt">
         <button class="diffbtn" type="button" onClick=${openDiff} aria-label="view diff" title="view diff">⑂</button>
