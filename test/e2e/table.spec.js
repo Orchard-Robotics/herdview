@@ -38,3 +38,26 @@ test("a GFM table renders as an HTML table, not raw pipes", async ({ page }) => 
   // and no raw pipe delimiter leaked into the text
   await expect(page.locator(".bubble", { hasText: "|---|" })).toHaveCount(0);
 });
+
+test("a wide table scrolls inside its bubble, not off the chat window", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 }); // phone width
+  const wide = [
+    "| " + Array.from({ length: 8 }, (_, i) => "column header " + (i + 1)).join(" | ") + " |",
+    "|" + "---|".repeat(8),
+    "| " + Array.from({ length: 8 }, (_, i) => "long-ish cell value " + (i + 1)).join(" | ") + " |",
+  ].join("\n");
+  env.appendTranscript(env.assistantTurn(wide));
+  await page.goto("/");
+  await page.locator('[data-pane="w3:p1"]').click();
+
+  const wrap = page.locator(".md-table-wrap").last();
+  await expect(wrap).toBeVisible();
+  const m = await wrap.evaluate((el) => ({
+    wrapClient: el.clientWidth, wrapScroll: el.scrollWidth,
+    bubbleClient: el.closest(".bubble").clientWidth,
+    docScroll: document.documentElement.scrollWidth, win: window.innerWidth,
+  }));
+  expect(m.wrapScroll).toBeGreaterThan(m.wrapClient);       // table overflows the wrap → scrolls inside it
+  expect(m.wrapClient).toBeLessThanOrEqual(m.bubbleClient); // wrap constrained to the bubble
+  expect(m.docScroll).toBeLessThanOrEqual(m.win + 1);       // no page-level horizontal overflow
+});
