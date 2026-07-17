@@ -456,3 +456,51 @@ func TestDebugKeysDisabled(t *testing.T) {
 	// Must be a safe no-op (no panic, no file created).
 	logSend(nil, "", "send-keys", "w1:p1", "1")
 }
+
+func TestImageContentType(t *testing.T) {
+	ok := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{"png", []byte("\x89PNG\r\n\x1a\n\x00\x00"), "image/png"},
+		{"gif", []byte("GIF89a\x00\x00"), "image/gif"},
+		{"jpeg", []byte("\xff\xd8\xff\xe0\x00\x10JFIF"), "image/jpeg"},
+		{"webp", []byte("RIFF\x24\x00\x00\x00WEBPVP8 "), "image/webp"},
+	}
+	for _, c := range ok {
+		if ct, good := imageContentType(c.data); !good || ct != c.want {
+			t.Errorf("%s: got (%q,%v) want (%q,true)", c.name, ct, good, c.want)
+		}
+	}
+	// SVG (script vector) and plain text must be refused.
+	bad := map[string][]byte{
+		"svg":  []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>x()</script></svg>`),
+		"text": []byte("just some text, not an image at all"),
+		"html": []byte("<!doctype html><html></html>"),
+	}
+	for name, data := range bad {
+		if ct, good := imageContentType(data); good {
+			t.Errorf("%s: expected refusal, got %q", name, ct)
+		}
+	}
+}
+
+func TestReferencedPath(t *testing.T) {
+	tail := []byte(`● Bash(ls ~/.ssh) → id_rsa.pub  id_rsa\n` +
+		`saved plot to /mnt/storage/tmp/loss_curve.png\n` +
+		`{"path":"/home/me/.ssh/id_rsa.pub"}`)
+	// whole-token references pass
+	for _, p := range []string{"/mnt/storage/tmp/loss_curve.png", "/home/me/.ssh/id_rsa.pub"} {
+		if !referencedPath(tail, p) {
+			t.Errorf("expected %q to be referenced", p)
+		}
+	}
+	// a sibling that's only a PREFIX of a referenced path must be rejected
+	// (requesting id_rsa when only id_rsa.pub was referenced)
+	for _, p := range []string{"/home/me/.ssh/id_rsa", "/mnt/storage/tmp/loss_curve", "/etc/passwd", ""} {
+		if referencedPath(tail, p) {
+			t.Errorf("expected %q to be rejected", p)
+		}
+	}
+}

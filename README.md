@@ -135,6 +135,7 @@ records text typed to agents.
 | `GET /api/pane/choices?pane=ID&session=S` | parsed multiple-choice prompt, if the pane is sitting on one |
 | `GET /api/pane/tasks?pane=ID&session=S` | parsed task checklist, if present |
 | `GET /api/pane/diff?pane=ID&session=S` | the agent repo's uncommitted working diff (+ `--stat`, untracked) |
+| `GET /api/pane/image?pane=ID&session=S&path=P` | a raster image the agent referenced in a `herdview-image` block (path must appear in the pane's transcript) |
 | `POST /api/pane/send?pane=ID&session=S` | `{text}` → type + Enter into the pane |
 | `POST /api/pane/key?pane=ID&session=S` | `{keys:[...]}` → raw keystrokes (menus) |
 | `GET /api/debug/keys` | tail of the dev keystroke log (404 unless `HERDVIEW_DEBUG_KEYS` is set) |
@@ -149,6 +150,10 @@ herdview upgrades it to a live element in the chat bubble (no artifact, no new t
 - ` ```html-widget ` — raw HTML/SVG/canvas, rendered in a **sandboxed iframe**
   (`sandbox="allow-scripts"`, CSP `default-src 'none'` → no network, no page access),
   auto-sized to its content.
+- ` ```herdview-image ` — an embedded plot/image. JSON `{path}` (herdview loads
+  the file out-of-band via `/api/pane/image`, keeping big images out of the
+  transcript) or a small inline `{src:"data:image/…"}`. External URLs and SVG are
+  refused; only a path the agent referenced in that message is served.
 - ` ```diff ` — a colorized diff (green adds, red deletes, dimmed hunk/file headers).
 - **Callouts** — `> [!NOTE] / [!TIP] / [!IMPORTANT] / [!WARNING] / [!CAUTION]` render
   as colored admonition boxes.
@@ -186,9 +191,11 @@ in the phone/desktop mirror instead of as a wall of text or a heavy artifact.
   ```
   Read that file and follow it. If the glob doesn't resolve, herdview isn't
   installed → skip this and write normally.
-- It documents three fences: ` ```herdview-card ` (titled card + progress bars),
-  ` ```herdview-chart ` (bar/line), and ` ```html-widget ` (arbitrary HTML in a
-  sandboxed iframe). Keep them compact; they render inline in a chat bubble.
+- It documents several fences: ` ```herdview-card ` (titled card + progress bars),
+  ` ```herdview-chart ` (bar/line), ` ```herdview-image ` (an embedded plot/image
+  by file path), ` ```html-widget ` (arbitrary HTML in a sandboxed iframe), plus
+  ` ```diff `, ` ```mermaid `, and `> [!NOTE]` callouts. Keep them compact; they
+  render inline in a chat bubble.
 - To turn this off: delete this section, or toggle it off in the viewer
   (⚙ → "Render rich blocks").
 ````

@@ -224,6 +224,9 @@
   .hv-sparka{fill:var(--accent-soft);stroke:none;}
   .bubble .hv-widget{width:100%;border:1px solid var(--border);border-radius:11px;background:var(--surface);margin:.45rem 0;height:120px;display:block;}
   .bubble .hv-mermaid{margin:.5rem 0;overflow-x:auto;text-align:center;}
+  .bubble .hv-image{margin:.5rem 0;}
+  .bubble .hv-image img{max-width:100%;height:auto;display:block;border:1px solid var(--border);border-radius:11px;background:var(--surface);}
+  .bubble .hv-image figcaption{font-size:.72rem;color:var(--faint);margin-top:.3rem;text-align:center;}
   .bubble .hv-mermaid svg{max-width:100%;height:auto;}
   .tools{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.4rem;}
   .toolchip{font-family:var(--mono);font-size:.63rem;background:var(--surface-2);border:1px solid var(--border);
@@ -569,6 +572,46 @@
     return box;
   }
 
+  // The pane/session the currently-open Detail is showing — used to build the
+  // same-origin URL for herdview-image blocks that reference a file by path.
+  // Safe because only one Detail is mounted at a time (set in its render body,
+  // before any child bubble's layout effect runs).
+  let hvImgTarget = null;
+
+  // hvImage renders an agent-embedded image. {path} loads the file out-of-band
+  // via /api/pane/image (keeps big plots out of the transcript/token budget);
+  // {src} allows a small inline data: URI. External URLs are refused. Returns
+  // null (→ fall back to a code block) when there's nothing safe to show.
+  function hvImage(spec){
+    let src = "";
+    if(typeof spec.src === "string" && /^data:image\/(png|jpe?g|gif|webp)[;,]/i.test(spec.src)){
+      src = spec.src;                                  // raster only (SVG refused, like the backend)
+    } else if(typeof spec.path === "string" && spec.path && hvImgTarget){
+      const q = "pane=" + encodeURIComponent(hvImgTarget.pane) +
+        (hvImgTarget.session ? "&session=" + encodeURIComponent(hvImgTarget.session) : "");
+      src = "/api/pane/image?" + q + "&path=" + encodeURIComponent(spec.path);
+    } else {
+      return null;
+    }
+    const fig = document.createElement("figure");
+    fig.className = "hv-image";
+    const img = document.createElement("img");
+    img.src = src;
+    img.loading = "lazy";
+    img.alt = typeof spec.alt === "string" ? spec.alt
+      : (typeof spec.caption === "string" ? spec.caption : "image");
+    if(spec.maxWidth != null){
+      img.style.maxWidth = typeof spec.maxWidth === "number" ? spec.maxWidth + "px" : String(spec.maxWidth);
+    }
+    fig.appendChild(img);
+    if(typeof spec.caption === "string" && spec.caption){
+      const cap = document.createElement("figcaption");
+      cap.textContent = spec.caption;
+      fig.appendChild(cap);
+    }
+    return fig;
+  }
+
   function renderRichBlock(parent, lang, content){
     let el = null;
     try {
@@ -577,6 +620,7 @@
       else if(lang === "html-widget") el = hvWidget(content);
       else if(lang === "diff") el = hvDiffEl(content);
       else if(lang === "mermaid") el = hvMermaid(content);
+      else if(lang === "herdview-image") el = hvImage(JSON.parse(content));
     } catch(e){ return false; }
     if(el){ parent.appendChild(el); return true; }
     return false;
@@ -1086,6 +1130,7 @@
     async function key(...keys){ try{ await sendKeys(pane, session, keys); }catch(e){ alert("key failed: "+e.message); } }
 
     // ---- derive what to render ----
+    hvImgTarget = { pane, session };   // for herdview-image path→URL (one Detail mounted at a time)
     const real = (data.msgs || []).filter(m => (m.text && m.text.trim()) || (m.tools && m.tools.length));
     const act = activityFor(status, data.msgs, workingSince.current);
     const actMode = (act && act.elapsed != null && act.elapsed >= 8) ? "pill" : "dots";

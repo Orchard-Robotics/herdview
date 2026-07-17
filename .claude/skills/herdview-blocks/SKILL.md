@@ -91,6 +91,27 @@ it auto-sizes to its content.
 
 Keep widgets small and self-contained (no external URLs — they're blocked).
 
+## ` ```herdview-image ` — an embedded image or plot
+
+Show a plot, chart, or thumbnail you produced (a matplotlib PNG, a depth-map
+crop, a screenshot). Prefer **`path`** — herdview loads the file out of band, so
+the image never enters the transcript or your token budget:
+
+```herdview-image
+{"path": "/mnt/storage/tmp/loss_curve.png", "caption": "training loss"}
+```
+
+- `path`: absolute path to a raster image (PNG / JPEG / GIF / WebP) you wrote.
+  Only a path that appears in this message is served, and only if it sniffs as a
+  real image.
+- `src`: a small inline `data:image/…;base64,…` URI, for tiny images only. Do
+  **not** use it for real plots — inline base64 lives in the transcript and costs
+  tokens on every later turn; use `path`.
+- `caption`, `alt`, `maxWidth` (px) are optional.
+
+External `http(s)` URLs are refused, and SVG is not served (script risk). So save
+the plot to a file and reference it by `path`.
+
 ---
 
 ## ` ```diff ` — a colorized diff

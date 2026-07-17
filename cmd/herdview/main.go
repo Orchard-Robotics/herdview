@@ -1173,6 +1173,134 @@ func handleTranscript(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"session_id": sid, "messages": msgs})
 }
 
+// imageContentType sniffs image bytes and returns a safe content type. SVG is
+// intentionally excluded (it can carry script); webp is matched by magic since
+// http.DetectContentType doesn't recognize it.
+func imageContentType(data []byte) (string, bool) {
+	ct := http.DetectContentType(data)
+	if strings.HasPrefix(ct, "image/") { // png, jpeg, gif (not svg → text/xml)
+		return ct, true
+	}
+	if len(data) >= 12 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
+		return "image/webp", true
+	}
+	return ct, false
+}
+
+// paneTranscriptTail returns recent transcript bytes for a pane, or nil.
+func paneTranscriptTail(socket, pane string) []byte {
+	var tpath string
+	if sf, dir, ok := paneSession(socket, pane); ok {
+		tpath = findTranscript(dir, sf.SessionID)
+	}
+	if tpath == "" {
+		if raw, err := os.ReadFile(mapPath(pane)); err == nil {
+			var m paneMap
+			if json.Unmarshal(raw, &m) == nil {
+				tpath = m.TranscriptPath
+			}
+		}
+	}
+	if tpath == "" {
+		return nil
+	}
+	tail, err := readTail(tpath, 512*1024)
+	if err != nil {
+		return nil
+	}
+	return tail
+}
+
+func isPathByte(b byte) bool {
+	return b == '/' || b == '.' || b == '-' || b == '_' ||
+		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// referencedPath reports whether path occurs in the transcript tail as a whole
+// path token — bounded on both sides by a non-path byte. This is stricter than a
+// plain substring test: it rejects requesting a sibling like /x/id_rsa when the
+// transcript only mentions /x/id_rsa.pub (the trailing "." would continue the
+// path), closing a prefix/substring read of an unreferenced file.
+func referencedPath(tail []byte, path string) bool {
+	if path == "" {
+		return false
+	}
+	s := string(tail)
+	for i := 0; ; {
+		j := strings.Index(s[i:], path)
+		if j < 0 {
+			return false
+		}
+		start := i + j
+		end := start + len(path)
+		beforeOK := start == 0 || !isPathByte(s[start-1])
+		afterOK := end >= len(s) || !isPathByte(s[end])
+		if beforeOK && afterOK {
+			return true
+		}
+		i = start + 1
+	}
+}
+
+// handleImage serves a local image the agent referenced in a herdview-image
+// block. herdview binds all interfaces with no auth, so this must NOT be a
+// general file read. Guards: the path must appear as a whole token in this pane's
+// transcript, must be a regular file (symlinks refused via Lstat), is read under
+// a hard size cap (enforced during the read, not via a racy pre-stat), and must
+// sniff as a raster image (SVG/text/html refused). NOTE: a Claude transcript
+// includes untrusted tool output (fetched pages, file reads), so the
+// transcript-membership guard is a coarse filter, not an authz boundary — the
+// image-only content sniff is what bounds worst-case disclosure to image files.
+// It assumes, like the rest of herdview, that the port is on a gated network.
+func handleImage(w http.ResponseWriter, r *http.Request) {
+	socket, pane, ok := resolveTarget(w, r)
+	if !ok {
+		return
+	}
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		http.Error(w, "missing path", http.StatusBadRequest)
+		return
+	}
+	tail := paneTranscriptTail(socket, pane)
+	if tail == nil || !referencedPath(tail, path) {
+		http.Error(w, "path not referenced by this agent", http.StatusForbidden)
+		return
+	}
+	// Lstat (not Stat) so a symlink is seen as a symlink, not its target.
+	if li, err := os.Lstat(path); err != nil || !li.Mode().IsRegular() {
+		http.Error(w, "not a regular file", http.StatusNotFound)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		http.Error(w, "open failed", http.StatusBadGateway)
+		return
+	}
+	defer f.Close()
+	const maxImage = 15 << 20 // 15 MB
+	// LimitReader enforces the cap during the read, so a file that grows after a
+	// stat can't slurp unbounded memory.
+	data, err := io.ReadAll(io.LimitReader(f, maxImage+1))
+	if err != nil {
+		http.Error(w, "read failed", http.StatusBadGateway)
+		return
+	}
+	if len(data) > maxImage {
+		http.Error(w, "image too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	ct, ok := imageContentType(data)
+	if !ok {
+		http.Error(w, "not a supported image ("+ct+")", http.StatusUnsupportedMediaType)
+		return
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Write(data)
+}
+
 // handleRename sets (or, with an empty name, clears) an agent's custom name.
 func handleRename(w http.ResponseWriter, r *http.Request) {
 	socket, pane, ok := resolveTarget(w, r)
@@ -1417,6 +1545,7 @@ func main() {
 	mux.HandleFunc("/api/pane/choices", handleChoices)
 	mux.HandleFunc("/api/pane/tasks", handleTasks)
 	mux.HandleFunc("/api/pane/diff", handleDiff)
+	mux.HandleFunc("/api/pane/image", handleImage)
 	mux.HandleFunc("/api/pane/rename", handleRename)
 	mux.HandleFunc("/api/worktree", handleNewWorktree)
 	mux.HandleFunc("/api/agent", handleNewAgent)
