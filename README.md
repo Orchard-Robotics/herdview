@@ -157,9 +157,11 @@ in the phone/desktop mirror instead of as a wall of text or a heavy artifact.
 
 - The format guide isn't auto-discovered, so **read it once when it's relevant**
   (summarizing results/metrics, a comparison, progress, or a small widget). Find it
-  via glob (the hash suffix changes per install):
+  via glob — check the github-install path and your local checkout, if any (the
+  hash suffix changes per install):
   ```
-  ls ~/.config/herdr/plugins/github/orchard.herdview-*/.claude/skills/herdview-blocks/SKILL.md
+  ls ~/.config/herdr/plugins/github/orchard.herdview-*/.claude/skills/herdview-blocks/SKILL.md \
+     /path/to/herdview/.claude/skills/herdview-blocks/SKILL.md 2>/dev/null | head -1
   ```
   Read that file and follow it. If the glob doesn't resolve, herdview isn't
   installed → skip this and write normally.
