@@ -329,6 +329,34 @@ func handleAgents(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(agents)
 }
 
+// sessionInfo is one running herdr session as the UI needs it.
+type sessionInfo struct {
+	Name string `json:"name"`
+	// Reachable is false when herdr won't answer for this session — most often a
+	// long-lived server running an older build than the CLI, which refuses to
+	// talk down ("client protocol N is newer than server protocol M"). Such a
+	// session may be full of agents we simply cannot read, so the UI must say
+	// that rather than report zero.
+	Reachable bool `json:"reachable"`
+}
+
+// handleSessions lists the running herdr sessions. The grid derives its session
+// tier from /api/agents, so a session with no readable agents would otherwise be
+// invisible — and unreachable, since starting an agent from the UI has to target
+// a session. A freshly started session is exactly that case.
+func handleSessions(w http.ResponseWriter, r *http.Request) {
+	out := []sessionInfo{}
+	for _, s := range listSessions() {
+		if !s.Running || s.Name == "" {
+			continue
+		}
+		_, err := runHerdrOn(s.Socket, "agent", "list")
+		out = append(out, sessionInfo{Name: s.Name, Reachable: err == nil})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"sessions": out})
+}
+
 // resolveTarget reads ?session=&pane=, validates the pane id, and returns the
 // herdr socket for that session ("" = ambient, for single-session use). Pane ids
 // collide across sessions, so aggregate callers must pass ?session=.
@@ -1576,6 +1604,7 @@ func main() {
 		fmt.Fprintln(w, version)
 	})
 	mux.HandleFunc("/api/agents", handleAgents)
+	mux.HandleFunc("/api/sessions", handleSessions)
 	mux.HandleFunc("/api/pane/read", handleRead)
 	mux.HandleFunc("/api/pane/transcript", handleTranscript)
 	mux.HandleFunc("/api/pane/send", handleSend)

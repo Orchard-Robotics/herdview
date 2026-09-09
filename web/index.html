@@ -797,6 +797,13 @@
     if(DEMO) return DEMO_DATA.agents;
     return await (await api("/api/agents")).json();
   }
+  // Running sessions, including ones with no readable agents — the agent list
+  // alone can't see those, so a freshly started session would never reach the
+  // gate. Each entry is {name, reachable}.
+  async function fetchSessions(){
+    if(DEMO) return [];
+    return (await (await api("/api/sessions")).json()).sessions || [];
+  }
   // pane ids collide across sessions, so every pane op is qualified by session.
   const pq = (pane, session) => "pane="+encodeURIComponent(pane)+(session?"&session="+encodeURIComponent(session):"");
   async function fetchTranscript(pane, session){
@@ -853,9 +860,14 @@
     return t + "  ▸";                                  // always a tap affordance
   }
   // Aggregate agents into per-session summaries; keys sorted blocked-first.
-  function sessionSummary(agents){
+  // `running` ({name, reachable} from /api/sessions) adds the sessions with no
+  // readable agents, so a just-started one is listed instead of missing, and one
+  // herdr won't answer for is flagged rather than reported as empty.
+  function sessionSummary(agents, running){
     const map = {}, order = [];
-    for(const a of agents){ const k = a.session || ""; if(!map[k]){ map[k]={n:0,blocked:0,working:0}; order.push(k); } map[k].n++; if(a.agent_status==="blocked") map[k].blocked++; else if(a.agent_status==="working") map[k].working++; }
+    const add = k => { if(!map[k]){ map[k]={n:0,blocked:0,working:0,unreachable:false}; order.push(k); } return map[k]; };
+    for(const a of agents){ const m = add(a.session || ""); m.n++; if(a.agent_status==="blocked") m.blocked++; else if(a.agent_status==="working") m.working++; }
+    for(const s of (running || [])){ const m = add(s.name); if(!s.reachable) m.unreachable = true; }
     const keys = order.sort((x,y)=>(map[x].blocked?0:1)-(map[y].blocked?0:1) || x.localeCompare(y));
     return { map, keys };
   }
@@ -934,13 +946,17 @@
   }
 
   function SessionCard({ name, info, onClick }){
-    const s = info.blocked ? "blocked" : (info.working ? "working" : "idle");
+    // A session herdr won't answer for may be full of agents we can't read, so
+    // never claim "0 agents" for it — say so and name the fix.
+    const dark = info.unreachable && !info.n;
+    const s = dark ? "unknown" : (info.blocked ? "blocked" : (info.working ? "working" : "idle"));
     return html`<div class=${"card " + s} data-session-name=${name} onClick=${onClick}>
       <div class="row">
         <span class="name">▸ ${name || "session"} <span class="chev">›</span></span>
-        <span class=${"pill " + s}><span class="dot"></span>${info.n} agent${info.n === 1 ? "" : "s"}</span>
+        <span class=${"pill " + s}><span class="dot"></span>${dark ? "unreadable" : `${info.n} agent${info.n === 1 ? "" : "s"}`}</span>
       </div>
-      ${info.blocked ? html`<div class="path">${info.blocked} need you</div>` : null}
+      ${dark ? html`<div class="path">herdr won't answer — restart this session's server</div>`
+             : (info.blocked ? html`<div class="path">${info.blocked} need you</div>` : null)}
     </div>`;
   }
 
@@ -1334,19 +1350,27 @@
   }
 
   // Poll the aggregate agent list; `poke` forces an immediate refetch after an action.
+  // The running-session list rides along, and its failure is non-fatal: the grid
+  // still renders from the agents, minus any session that has none.
   function useAgents(){
     const [agents, setAgents] = useState(null);
+    const [sessions, setSessions] = useState([]);
     const [err, setErr] = useState(null);
     const pokeRef = useRef(null);
     useEffect(() => {
       let alive = true;
-      async function tick(){ try{ const a = await fetchAgents(); if(alive){ setAgents(a); setErr(null); } }catch(e){ if(alive) setErr(e.message); } }
+      async function tick(){
+        try{
+          const [a, s] = await Promise.all([fetchAgents(), fetchSessions().catch(() => [])]);
+          if(alive){ setAgents(a); setSessions(s); setErr(null); }
+        }catch(e){ if(alive) setErr(e.message); }
+      }
       pokeRef.current = tick;
       tick();
       const id = setInterval(tick, 1500);
       return () => { alive = false; clearInterval(id); };
     }, []);
-    return { agents, err, poke: () => pokeRef.current && pokeRef.current() };
+    return { agents, sessions, err, poke: () => pokeRef.current && pokeRef.current() };
   }
 
   // Badge the browser-tab title with the count of agents that need you, but only
@@ -1374,7 +1398,7 @@
   }
 
   function App(){
-    const { agents, err, poke } = useAgents();
+    const { agents, sessions, err, poke } = useAgents();
     const wide = useWide();
     const [chosenSession, setChosenSession] = useState(null);   // set once a session gate card is picked
     const [selectedPane, setSelectedPane] = useState(null);     // selected agent within the active session
@@ -1383,7 +1407,7 @@
 
     const list = agents || [];
     useTabBadge(list.filter(a => a.agent_status === "blocked").length);
-    const { map, keys } = sessionSummary(list);
+    const { map, keys } = sessionSummary(list, sessions);
     const gated = keys.length > 1;                              // 2+ sessions → the session gate is in play
     const showGate = gated && chosenSession == null;
     const activeSession = gated ? chosenSession : (keys[0] || "");
@@ -1391,6 +1415,10 @@
                      .sort((a,b)=>(STATE_ORDER[a.agent_status]??3)-(STATE_ORDER[b.agent_status]??3));
     const selAgent = (!showGate && selectedPane) ? mine.find(a => a.pane_id === selectedPane) : null;
     const inDetail = !wide && !!selAgent;                       // narrow: a selected agent is a full-screen detail
+    // Repo/cwd for the ＋ actions comes from THIS session's agents, never a
+    // globally focused one — otherwise creating from session A lands in B, and
+    // a session with no agents can't be targeted at all.
+    const sessionBase = mine.find(a => a.focused) || mine[0];
 
     // ---- actions ----
     async function renameAgent(a){
@@ -1400,20 +1428,20 @@
       catch(e){ alert("rename failed: "+e.message); }
     }
     async function newWorktree(){
-      const base = list.find(a=>a.focused) || list[0];
-      if(!base){ alert("No agent to derive a repo from."); return; }
+      const base = sessionBase;
+      if(!base){ alert("No agent in this session to derive a repo from — start an agent here first."); return; }
       const name = prompt(`New worktree — branch name\n(repo: ${shortPath(base.cwd)}, launches a Claude agent)`, "");
       if(name === null) return;
       const n = name.trim(); if(!n) return;
-      try { await sendNewWorktree(base.cwd, n, base.session); setTimeout(poke, 600); }
+      try { await sendNewWorktree(base.cwd, n, activeSession); setTimeout(poke, 600); }
       catch(e){ alert("worktree create failed: "+e.message); }
     }
     async function newAgent(){
-      const base = list.find(a=>a.focused) || list[0];
+      const base = sessionBase;
       const dir = prompt("New agent — working directory (opens a new tab, no branch):", base ? base.cwd : "");
       if(dir === null) return;
       const d = dir.trim(); if(!d) return;
-      try { await sendNewAgent(d, base ? base.session : ""); setTimeout(poke, 600); }
+      try { await sendNewAgent(d, activeSession); setTimeout(poke, 600); }
       catch(e){ alert("agent start failed: "+e.message); }
     }
     function onBack(){ if(inDetail){ setSelectedPane(null); } else { setChosenSession(null); setSelectedPane(null); } }
@@ -1462,8 +1490,7 @@
       </main>`;
     }
 
-    const base = list.find(a=>a.focused) || list[0];
-    const repo = base ? shortPath(base.cwd) : "—";
+    const repo = sessionBase ? shortPath(sessionBase.cwd) : (activeSession || "—");
 
     return html`<${Fragment}>
       <header>

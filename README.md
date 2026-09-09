@@ -56,7 +56,9 @@ prints a pointer. To link the app to a host, pair once (token from the app):
 
 - A live grid of every agent, **blocked agents sorted to the top** ("N need
   you"), each with a state pill, working directory, and git branch. Multiple
-  herdr sessions are aggregated — pick a session, then its agents.
+  herdr sessions are aggregated — pick a session, then its agents. **Every
+  running session is listed, including one with no agents yet** (`0 agents`), so
+  a session you just started is somewhere you can go and start the first agent.
 - Agents are named the way the terminal names them: each card and the detail
   header carry **herdr's own workspace label** (`oncall · pane 3`, not
   `workspace 25 · pane 3`), and the header names the **herdr session** you're
@@ -138,6 +140,7 @@ records text typed to agents.
 |-------|---------|
 | `GET /api/version` | the running build's version (used by `--detach` to auto-upgrade) |
 | `GET /api/agents` | live agent grid across all sessions (state, cwd, branch, session, workspace name) |
+| `GET /api/sessions` | names of the running herdr sessions, so one with no agents yet is still listed |
 | `GET /api/pane/read?pane=ID&session=S` | recent output for one pane (text) |
 | `GET /api/pane/transcript?pane=ID&session=S` | structured conversation (chat bubbles); 404 → fall back to read |
 | `GET /api/pane/choices?pane=ID&session=S` | parsed multiple-choice prompt, if the pane is sitting on one |

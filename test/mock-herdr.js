@@ -44,6 +44,12 @@ if (a === "session" && b === "list") {
   process.exit(0);
 }
 if (a === "agent" && b === "list") {
+  // agentListShouldFail models a session herdr won't answer for — in the field, a
+  // server older than the CLI ("client protocol N is newer than server M").
+  if (current().agentListShouldFail) {
+    process.stderr.write("mock: protocol_mismatch\n");
+    process.exit(1);
+  }
   out({ id: "cli:agent:list", result: { agents: current().agents || [], type: "agent_list" } });
   process.exit(0);
 }
