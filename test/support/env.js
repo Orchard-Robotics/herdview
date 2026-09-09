@@ -74,13 +74,15 @@ function mkAgent(pane, status, extra = {}) {
 }
 
 // Replace the single-session state with several sessions (aggregate view).
-// list: [{name, agents, workspaces?, read?, processInfo?, sendShouldFail?}] — sockets synthesized.
+// list: [{name, agents, workspaces?, read?, processInfo?, sendShouldFail?,
+// agentListShouldFail?}] — sockets synthesized.
 function setSessions(list) {
   const sessions = list.map((x) => ({
     name: x.name, socket: "MOCK_" + x.name, running: x.running !== false,
     agents: x.agents || [], workspaces: x.workspaces || [],
     read: x.read || {}, processInfo: x.processInfo || {},
     sendShouldFail: !!x.sendShouldFail,
+    agentListShouldFail: !!x.agentListShouldFail,
   }));
   const st = readState();
   st.sessions = sessions;
