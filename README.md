@@ -57,12 +57,20 @@ prints a pointer. To link the app to a host, pair once (token from the app):
 - A live grid of every agent, **blocked agents sorted to the top** ("N need
   you"), each with a state pill, working directory, and git branch. Multiple
   herdr sessions are aggregated — pick a session, then its agents.
+- Agents are named the way the terminal names them: each card and the detail
+  header carry **herdr's own workspace label** (`oncall · pane 3`, not
+  `workspace 25 · pane 3`), and the header names the **herdr session** you're
+  looking at. The raw `w<N>:p<N>` id stays available as the tooltip.
 - Tap an agent for its **transcript as chat bubbles** (with markdown, tables,
   and fenced code), a compose box (Shift+Enter to send), tappable **multiple-choice
   answers** for `AskUserQuestion`/permission prompts, a **task checklist**, and a
   side list of any **artifact links** the agent produced.
 - **⑂ diff** — a colored view of the agent's **uncommitted changes** (working diff
   + `--stat` summary + untracked files), rendered on the phone.
+- **Inline code changes** — every completed `Edit`/`Write`/`MultiEdit` in the
+  transcript shows its diff under the tool line, the way the terminal prints it,
+  with a `+n −n` tally. Short diffs are expanded; a long one starts collapsed so
+  one big edit can't bury the chat.
 - When an agent is **blocked wanting to Edit/Write a file**, the approval card
   shows the **proposed change as a diff** (old→new), so you approve knowing what
   it'll do — not just the filename.
@@ -120,7 +128,7 @@ records text typed to agents.
 
 | Layer   | Mechanism |
 |---------|-----------|
-| Read    | `herdr agent list` (grid) + `herdr pane read` (per-agent output) via `$HERDR_BIN_PATH` |
+| Read    | `herdr agent list` (grid) + `herdr workspace list` (workspace names) + `herdr pane read` (per-agent output) via `$HERDR_BIN_PATH` |
 | Render  | embedded mobile web UI (`web/`, compiled into the binary via `go:embed`) |
 | Steer   | `herdr pane send-text` + Enter (message), `herdr pane send-keys` (menus) into the existing pane |
 
@@ -129,7 +137,7 @@ records text typed to agents.
 | Route | Purpose |
 |-------|---------|
 | `GET /api/version` | the running build's version (used by `--detach` to auto-upgrade) |
-| `GET /api/agents` | live agent grid across all sessions (state, cwd, branch, session) |
+| `GET /api/agents` | live agent grid across all sessions (state, cwd, branch, session, workspace name) |
 | `GET /api/pane/read?pane=ID&session=S` | recent output for one pane (text) |
 | `GET /api/pane/transcript?pane=ID&session=S` | structured conversation (chat bubbles); 404 → fall back to read |
 | `GET /api/pane/choices?pane=ID&session=S` | parsed multiple-choice prompt, if the pane is sitting on one |

@@ -211,16 +211,52 @@ func sessionSocket(name string) (string, bool) {
 
 // Agent is the subset of a herdr agent record the UI needs.
 type Agent struct {
-	Pane      string `json:"pane_id"`
-	Workspace string `json:"workspace_id"`
-	Tab       string `json:"tab_id"`
-	Agent     string `json:"agent"`
-	Name      string `json:"name,omitempty"`   // custom display name (herdr agent rename)
-	Status    string `json:"agent_status"`
-	Cwd       string `json:"cwd"`
-	Branch    string `json:"branch,omitempty"` // git branch of the agent's cwd (worktree awareness)
-	Session   string `json:"session,omitempty"` // herdr session the agent lives in (aggregate view)
-	Focused   bool   `json:"focused"`
+	Pane          string `json:"pane_id"`
+	Workspace     string `json:"workspace_id"`
+	WorkspaceName string `json:"workspace_name,omitempty"` // herdr's own workspace label, so the mirror names it like the terminal
+	Tab           string `json:"tab_id"`
+	Agent         string `json:"agent"`
+	Name          string `json:"name,omitempty"` // custom display name (herdr agent rename)
+	Status        string `json:"agent_status"`
+	Cwd           string `json:"cwd"`
+	Branch        string `json:"branch,omitempty"`  // git branch of the agent's cwd (worktree awareness)
+	Session       string `json:"session,omitempty"` // herdr session the agent lives in (aggregate view)
+	Focused       bool   `json:"focused"`
+}
+
+// parseWorkspaceLabels maps workspace_id → the label herdr shows on that
+// workspace (`herdr workspace list`), so the mirror can name a workspace the
+// way the terminal does instead of showing the raw w<N> id. Unlabelled
+// workspaces are omitted, and the UI falls back to the id.
+func parseWorkspaceLabels(raw []byte) map[string]string {
+	var res struct {
+		Result struct {
+			Workspaces []struct {
+				ID    string `json:"workspace_id"`
+				Label string `json:"label"`
+			} `json:"workspaces"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(raw, &res) != nil {
+		return nil
+	}
+	m := map[string]string{}
+	for _, ws := range res.Result.Workspaces {
+		if ws.ID != "" && ws.Label != "" {
+			m[ws.ID] = ws.Label
+		}
+	}
+	return m
+}
+
+// workspaceLabels reads one session's workspace labels. nil on any failure — a
+// missing label is cosmetic, never a reason to fail the grid.
+func workspaceLabels(socket string) map[string]string {
+	out, err := runHerdrOn(socket, "workspace", "list")
+	if err != nil {
+		return nil
+	}
+	return parseWorkspaceLabels(out)
 }
 
 // gitBranch returns the current branch of a checkout, or "" if it isn't a repo.
@@ -250,14 +286,16 @@ type agentListResult struct {
 func handleAgents(w http.ResponseWriter, r *http.Request) {
 	branchByCwd := map[string]string{}
 	agents := []Agent{}
-	collect := func(raw []byte, session string) {
+	collect := func(raw []byte, session, socket string) {
 		var res agentListResult
 		if json.Unmarshal(raw, &res) != nil {
 			return
 		}
+		labels := workspaceLabels(socket) // one call per session, not per agent
 		for i := range res.Result.Agents {
 			a := res.Result.Agents[i]
 			a.Session = session
+			a.WorkspaceName = labels[a.Workspace]
 			b, ok := branchByCwd[a.Cwd]
 			if !ok {
 				b = gitBranch(a.Cwd)
@@ -276,14 +314,14 @@ func handleAgents(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "herdr agent list failed: "+err.Error(), http.StatusBadGateway)
 			return
 		}
-		collect(out, "")
+		collect(out, "", "")
 	} else {
 		for _, s := range sessions {
 			if !s.Running {
 				continue
 			}
 			if out, err := runHerdrOn(s.Socket, "agent", "list"); err == nil {
-				collect(out, s.Name)
+				collect(out, s.Name, s.Socket)
 			}
 		}
 	}
