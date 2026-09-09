@@ -9,6 +9,25 @@ import (
 	"testing"
 )
 
+func TestParseWorkspaceLabels(t *testing.T) {
+	raw := []byte(`{"id":"cli:workspace:list","result":{"type":"workspace_list","workspaces":[
+		{"workspace_id":"w4","label":"fruitscope-ml","number":1},
+		{"workspace_id":"w7","label":"","number":2},
+		{"workspace_id":"","label":"orphan","number":3}]}}`)
+	got := parseWorkspaceLabels(raw)
+	if got["w4"] != "fruitscope-ml" {
+		t.Errorf(`w4: want "fruitscope-ml", got %q`, got["w4"])
+	}
+	// An unlabelled workspace, and one with no id, are both skipped so the UI
+	// falls back to the raw id instead of rendering an empty name.
+	if len(got) != 1 {
+		t.Errorf("want only the labelled workspace, got %v", got)
+	}
+	if parseWorkspaceLabels([]byte("not herdr json")) != nil {
+		t.Error("malformed herdr output should yield no labels")
+	}
+}
+
 // TestHerdrBin covers herdr resolution when HERDR_BIN_PATH is unset and $PATH is
 // unusable (the cameras' literal, unexpanded "~/.local/bin") — it must still find
 // herdr via a PATH lookup or the known install locations under $HOME.

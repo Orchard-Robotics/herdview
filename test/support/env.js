@@ -29,6 +29,11 @@ const DEFAULT_STATE = {
     { agent: "claude", agent_status: "working", name: "builder", cwd: CWD, foreground_cwd: CWD, pane_id: "w1:p5", tab_id: "w1:t5", workspace_id: "w1", focused: false },
     { agent: "claude", agent_status: "idle", cwd: CWD, foreground_cwd: CWD, pane_id: "w1:p1", tab_id: "w1:t1", workspace_id: "w1", focused: false },
   ],
+  // herdr's own workspace labels (`herdr workspace list`), mirrored in the UI
+  workspaces: [
+    { workspace_id: "w3", label: "acme-api", number: 1 },
+    { workspace_id: "w1", label: "acme-web", number: 2 },
+  ],
   read: { "w3:p1": "recent output line 1\nrecent output line 2" },
   processInfo: { "w3:p1": SESSION_PID },
   sendShouldFail: false,
@@ -69,11 +74,12 @@ function mkAgent(pane, status, extra = {}) {
 }
 
 // Replace the single-session state with several sessions (aggregate view).
-// list: [{name, agents, read?, processInfo?, sendShouldFail?}] — sockets synthesized.
+// list: [{name, agents, workspaces?, read?, processInfo?, sendShouldFail?}] — sockets synthesized.
 function setSessions(list) {
   const sessions = list.map((x) => ({
     name: x.name, socket: "MOCK_" + x.name, running: x.running !== false,
-    agents: x.agents || [], read: x.read || {}, processInfo: x.processInfo || {},
+    agents: x.agents || [], workspaces: x.workspaces || [],
+    read: x.read || {}, processInfo: x.processInfo || {},
     sendShouldFail: !!x.sendShouldFail,
   }));
   const st = readState();

@@ -41,6 +41,7 @@
     display:flex;align-items:center;gap:.7rem;}
   h1{font-size:1.12rem;letter-spacing:-.01em;margin:0;font-weight:640;flex:1;}
   h1 .g{color:var(--accent);}
+  h1 .hsub{font-family:var(--mono);font-size:.78rem;font-weight:400;color:var(--muted);}
   .count{font-family:var(--mono);font-size:.72rem;color:var(--muted);}
   .back{appearance:none;border:1px solid var(--border);background:var(--surface);color:var(--ink);
     font-family:var(--mono);font-size:.8rem;border-radius:8px;padding:.35rem .6rem;cursor:pointer;}
@@ -196,6 +197,17 @@
   .bubble .md-table td:not(:first-child),.bubble .md-table th:not(:first-child){font-variant-numeric:tabular-nums;}
   .msg.user .bubble .md-table th,.msg.user .bubble .md-table td{border-color:rgba(255,255,255,.3);}
   .msg.user .bubble .md-table th,.msg.user .bubble .md-table tbody tr:nth-child(even) td{background:rgba(255,255,255,.12);}
+  /* inline code changes under an Edit/Write, the way the terminal prints them */
+  .tooldiffs{display:flex;flex-direction:column;gap:.35rem;margin:.4rem 0 .1rem;max-width:100%;}
+  .tooldiff{border:1px solid var(--border);border-radius:9px;background:var(--surface);overflow:hidden;}
+  .tooldiff > summary{cursor:pointer;list-style:none;font-family:var(--mono);font-size:.7rem;color:var(--accent-ink);
+    padding:.35rem .55rem;display:flex;align-items:center;gap:.4rem;-webkit-tap-highlight-color:transparent;}
+  .tooldiff > summary::-webkit-details-marker{display:none;}
+  .tooldiff .tdpath{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;}
+  .tooldiff .tdstat{flex:0 0 auto;}
+  .tooldiff .tdadd{color:var(--idle);} .tooldiff .tddel{color:var(--blocked);}
+  .tooldiff .diffbody{border:none;border-top:1px solid var(--border);border-radius:0;max-height:46vh;overflow:auto;}
+  .msg.wdiff{max-width:96%;}
   /* herdview rich blocks (```herdview-card / ```herdview-chart / ```html-widget) */
   .bubble .hv-card,.bubble .hv-chart{border:1px solid var(--border);border-radius:11px;background:var(--surface);padding:.6rem .7rem;margin:.45rem 0;}
   .hv-cardh{display:flex;justify-content:space-between;align-items:center;gap:.5rem;margin-bottom:.35rem;}
@@ -337,8 +349,14 @@
   const STATE_ORDER = { blocked:0, working:1, idle:2, unknown:3 };
 
   const shortPath = p => { if(!p) return ""; const a=p.split("/").filter(Boolean); return a.length<=2?p:"…/"+a.slice(-2).join("/"); };
-  // w3:p1 → "workspace 3 · pane 1" (raw id kept as tooltip)
-  const prettyPane = id => { const m = /^w([0-9A-Za-z]+):p([0-9A-Za-z]+)$/.exec(id || ""); return m ? `workspace ${m[1]} · pane ${m[2]}` : (id || ""); };
+  // w3:p1 → "workspace 3 · pane 1" (raw id kept as tooltip). With herdr's own
+  // workspace label (workspace_name) it reads "acme-api · pane 1" — the name the
+  // terminal shows — falling back to the id when herdr reports no label.
+  const prettyPane = (id, wsName) => {
+    const m = /^w([0-9A-Za-z]+):p([0-9A-Za-z]+)$/.exec(id || "");
+    if(!m) return id || "";
+    return `${wsName || ("workspace " + m[1])} · pane ${m[2]}`;
+  };
 
   // brief confirmation pill so taps feel acknowledged before the next poll.
   // Kept imperative (appended to <body>) so it lives outside the Preact tree.
@@ -855,15 +873,46 @@
     return h(tag || "div", { ref, class: className });
   }
 
+  // The inline code change the terminal prints under an Edit/Write/MultiEdit —
+  // same diff the approval card shows, but for edits that already happened, so
+  // reading the mirror tells you WHAT changed and not just which file.
+  // <details> keeps it stateless; a long diff starts collapsed so one big edit
+  // can't bury the chat.
+  const INLINE_DIFF_OPEN_LINES = 40;
+  function diffTally(text){
+    let add = 0, del = 0;
+    for(const l of (text || "").split("\n")){
+      if(l[0] === "+") add++; else if(l[0] === "-") del++;
+    }
+    return { add, del, lines: add + del };
+  }
+  function ToolDiffs({ tools }){
+    const withDiff = (tools || []).filter(t => t.diff);
+    if(!withDiff.length) return null;
+    return html`<div class="tooldiffs">
+      ${withDiff.map((t, i) => {
+        const n = diffTally(t.diff);
+        return html`<details class="tooldiff" key=${i} open=${n.lines <= INLINE_DIFF_OPEN_LINES}>
+          <summary>⑂ ${t.name}${t.summary ? html` <span class="tdpath" title=${t.summary}>${shortPath(t.summary)}</span>` : null}
+            <span class="tdstat"><span class="tdadd">+${n.add}</span> <span class="tddel">−${n.del}</span></span></summary>
+          <${DiffBody} text=${t.diff} />
+        </details>`;
+      })}
+    </div>`;
+  }
+
   function Bubble({ m, grouped, pending }){
     const role = m.role === "user" ? "user" : "assistant";
-    const cls = "msg " + role + (grouped ? " grouped" : "") + (pending ? " pending" : "");
+    const hasDiff = (m.tools || []).some(t => t.diff);   // a diff needs the width
+    const cls = "msg " + role + (grouped ? " grouped" : "") + (pending ? " pending" : "")
+      + (hasDiff ? " wdiff" : "");
     return html`<div class=${cls}>
       <div class="bubble">
         ${m.text ? html`<${Rendered} text=${m.text} markdown=${role === "assistant"} />` : null}
         ${m.tools && m.tools.length ? html`<div class="tools">
           ${m.tools.map((t, i) => html`<span class="toolchip" key=${i} title=${t.summary || undefined}>⚙ ${t.name}</span>`)}
         </div>` : null}
+        <${ToolDiffs} tools=${m.tools} />
       </div>
     </div>`;
   }
@@ -878,7 +927,7 @@
       <div class="path">${shortPath(a.cwd)}</div>
       ${showBranch && a.branch ? html`<div class="branch">⎇ ${a.branch}</div>` : null}
       <div class="meta">
-        <span title=${a.pane_id}>${prettyPane(a.pane_id)}${a.focused ? html` · <span class="focus">focused</span>` : ""}</span>
+        <span title=${a.pane_id}>${prettyPane(a.pane_id, a.workspace_name)}${a.focused ? html` · <span class="focus">focused</span>` : ""}</span>
         <button class="rename" type="button" onClick=${e => { e.stopPropagation(); onRename(a); }}>✎ rename</button>
       </div>
     </div>`;
@@ -1168,7 +1217,11 @@
       let prev = null;
       real.forEach((m, idx) => {
         if(m.role === "assistant" && !(m.text && m.text.trim()) && m.tools && m.tools.length){
-          out.push(html`<div class="sys" key=${"m" + idx}>⚙ ${m.tools.map(t=>t.name).join(" · ")}</div>`);   // tool-only turn → system line
+          // tool-only turn → system line, plus the inline diff of any edit in it
+          out.push(html`<${Fragment} key=${"m" + idx}>
+            <div class="sys">⚙ ${m.tools.map(t=>t.name).join(" · ")}</div>
+            <${ToolDiffs} tools=${m.tools} />
+          </${Fragment}>`);
         } else {
           out.push(html`<${Bubble} key=${"m" + idx} m=${m} grouped=${prev === m.role} />`);
         }
@@ -1375,11 +1428,15 @@
       title = html`<span class="g">❯</span> herd<span class="g">view</span>`;
       count = `${keys.length} sessions` + (totalBlocked ? ` · ${totalBlocked} need you` : "");
     } else if(inDetail){
-      title = html`${(selAgent.name || selAgent.agent)} <span class="g">·</span> <span style="font-family:var(--mono);font-size:.78rem;color:var(--muted)" title=${selAgent.pane_id}>${prettyPane(selAgent.pane_id)}</span>`;
+      title = html`${(selAgent.name || selAgent.agent)} <span class="g">·</span> <span class="hsub" title=${selAgent.pane_id}>${prettyPane(selAgent.pane_id, selAgent.workspace_name)}</span>`;
       const blocked = mine.filter(a=>a.agent_status==="blocked").length;
-      count = `${mine.length} agent${mine.length===1?"":"s"}` + (blocked?` · ${blocked} need you`:"");
+      // Name the herdr session here too: the grid header (which carries it) is
+      // off-screen on a narrow detail view.
+      count = (activeSession ? activeSession + " · " : "")
+        + `${mine.length} agent${mine.length===1?"":"s"}` + (blocked?` · ${blocked} need you`:"");
     } else {
-      title = gated ? html`<span class="g">❯</span> ${activeSession||"session"}` : html`<span class="g">❯</span> herd<span class="g">view</span>`;
+      // Always name the session herdr is showing, not just when several exist.
+      title = activeSession ? html`<span class="g">❯</span> ${activeSession}` : html`<span class="g">❯</span> herd<span class="g">view</span>`;
       const blocked = mine.filter(a=>a.agent_status==="blocked").length;
       count = `${mine.length} agent${mine.length===1?"":"s"}` + (blocked?` · ${blocked} need you`:"");
     }

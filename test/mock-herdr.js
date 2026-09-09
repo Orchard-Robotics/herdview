@@ -26,7 +26,8 @@ function sessions() {
   if (Array.isArray(s.sessions)) return s.sessions;
   return [{
     name: "default", socket: "MOCK_DEFAULT", running: true,
-    agents: s.agents || [], read: s.read || {}, processInfo: s.processInfo || {},
+    agents: s.agents || [], workspaces: s.workspaces || [],
+    read: s.read || {}, processInfo: s.processInfo || {},
     sendShouldFail: s.sendShouldFail, worktreeResult: s.worktreeResult,
   }];
 }
@@ -44,6 +45,10 @@ if (a === "session" && b === "list") {
 }
 if (a === "agent" && b === "list") {
   out({ id: "cli:agent:list", result: { agents: current().agents || [], type: "agent_list" } });
+  process.exit(0);
+}
+if (a === "workspace" && b === "list") {
+  out({ id: "cli:workspace:list", result: { workspaces: current().workspaces || [], type: "workspace_list" } });
   process.exit(0);
 }
 if (a === "pane" && b === "read") {
