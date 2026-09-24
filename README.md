@@ -88,18 +88,22 @@ prints a pointer. To link the app to a host, pair once (token from the app):
 
 By default herdview binds **loopback only** (`127.0.0.1:8848`), and every request
 must carry a **pairing token**. A terminal app's web preview of `localhost:8848`
-works as is. To reach it over your tailnet, bind a tailnet interface:
+works as is. To reach it over your tailnet, write this box's tailnet address to
+`~/.config/herdview/addr`, then reinstall so the server restarts on it:
 
 ```sh
-export HERDVIEW_ADDR=100.x.y.z:8848   # this box's tailnet IP (or 0.0.0.0:8848 for all interfaces)
+mkdir -p ~/.config/herdview
+echo "$(tailscale ip -4):8848" > ~/.config/herdview/addr   # or 0.0.0.0:8848 for all interfaces
+herdr plugin install Orchard-Robotics/herdview
 ```
 
-Set it in the environment herdr starts from, then reinstall (or stop the running
-server) so it restarts on the new address.
+The address resolves as `--addr`, then `HERDVIEW_ADDR`, then the `addr` file, then
+`127.0.0.1:8848`. Use the file rather than the variable: herdr launches the
+plugin with its own environment, so a variable set in your shell doesn't reach it.
 
-**Pairing.** On first run herdview generates a random token in `<stateDir>/token`
-(mode `0600`; `<stateDir>` is herdr's plugin state dir, else
-`~/.local/state/herdview`) and prints the pairing URL to the server log:
+**Pairing.** On first run herdview generates a random token in
+`~/.config/herdview/token` (mode `0600`) and prints the pairing URL to the server
+log:
 
 ```
 pair a browser once: http://<host>:8848/?token=<token>
@@ -235,7 +239,7 @@ in the phone/desktop mirror instead of as a wall of text or a heavy artifact.
 herdview steers terminals, so treat the port and the token as sensitive.
 
 - **Loopback by default.** A fresh install listens on `127.0.0.1` only. Binding
-  any other address is an explicit choice (`HERDVIEW_ADDR`).
+  any other address is an explicit choice (`~/.config/herdview/addr` or `HERDVIEW_ADDR`).
 - **Token on every request.** Every route except `GET /api/version` returns `401`
   without the pairing token (bearer header, or the cookie the pairing URL sets).
   The server refuses to start if it can't load or create a token. Anyone holding

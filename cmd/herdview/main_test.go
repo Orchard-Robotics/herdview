@@ -242,7 +242,7 @@ func TestRequireToken(t *testing.T) {
 // HERDVIEW_TOKEN overrides the file.
 func TestLoadToken(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HERDVIEW_STATE_DIR", dir)
+	t.Setenv("HERDVIEW_CONFIG_DIR", dir)
 	t.Setenv("HERDVIEW_TOKEN", "")
 
 	a, err := loadToken()
@@ -258,6 +258,41 @@ func TestLoadToken(t *testing.T) {
 	t.Setenv("HERDVIEW_TOKEN", "fromenv")
 	if c, _ := loadToken(); c != "fromenv" {
 		t.Errorf("env override: got %q", c)
+	}
+}
+
+// TestDefaultAddr: loopback unless HERDVIEW_ADDR or <configDir>/addr says otherwise.
+func TestDefaultAddr(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HERDVIEW_CONFIG_DIR", dir)
+	t.Setenv("HERDVIEW_ADDR", "")
+	if a := defaultAddr(); a != "127.0.0.1:8848" {
+		t.Errorf("fresh install: got %q, want loopback", a)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "addr"), []byte("  100.64.1.2:8848 \n# note\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if a := defaultAddr(); a != "100.64.1.2:8848" {
+		t.Errorf("addr file: got %q", a)
+	}
+	t.Setenv("HERDVIEW_ADDR", "127.0.0.1:9000")
+	if a := defaultAddr(); a != "127.0.0.1:9000" {
+		t.Errorf("env override: got %q", a)
+	}
+}
+
+// TestProbeAddr: the --detach probe dials the bound host, loopback for wildcards.
+func TestProbeAddr(t *testing.T) {
+	for in, want := range map[string]string{
+		"127.0.0.1:8848":  "127.0.0.1:8848",
+		"100.64.1.2:8848": "100.64.1.2:8848",
+		"0.0.0.0:8848":    "127.0.0.1:8848",
+		"[::]:8848":       "127.0.0.1:8848",
+		":8848":           "127.0.0.1:8848",
+	} {
+		if got, err := probeAddr(in); err != nil || got != want {
+			t.Errorf("probeAddr(%q) = %q, %v; want %q", in, got, err, want)
+		}
 	}
 }
 

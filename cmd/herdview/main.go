@@ -122,13 +122,41 @@ func guard(next http.Handler) http.Handler {
 
 const tokenCookie = "herdview_token"
 
-// loadToken returns the pairing token: HERDVIEW_TOKEN, else <stateDir>/token,
+// configDir holds the token and the optional addr file. Unlike stateDir it
+// ignores HERDR_PLUGIN_STATE_DIR: herdr sets that for pane.focused launches but
+// scrubs it from the install step, and the token must be the same for both.
+func configDir() string {
+	if d := os.Getenv("HERDVIEW_CONFIG_DIR"); d != "" {
+		return d
+	}
+	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
+		return filepath.Join(d, "herdview")
+	}
+	return filepath.Join(os.Getenv("HOME"), ".config", "herdview")
+}
+
+// defaultAddr: HERDVIEW_ADDR, else the first line of <configDir>/addr, else
+// loopback. The file is how a tailnet bind survives herdr launching the plugin
+// with its own environment.
+func defaultAddr() string {
+	if a := os.Getenv("HERDVIEW_ADDR"); a != "" {
+		return a
+	}
+	if b, err := os.ReadFile(filepath.Join(configDir(), "addr")); err == nil {
+		if a, _, _ := strings.Cut(strings.TrimSpace(string(b)), "\n"); strings.TrimSpace(a) != "" {
+			return strings.TrimSpace(a)
+		}
+	}
+	return "127.0.0.1:8848"
+}
+
+// loadToken returns the pairing token: HERDVIEW_TOKEN, else <configDir>/token,
 // generated (0600) on first run. The server refuses to start without one.
 func loadToken() (string, error) {
 	if t := strings.TrimSpace(os.Getenv("HERDVIEW_TOKEN")); t != "" {
 		return t, nil
 	}
-	dir := stateDir()
+	dir := configDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -174,7 +202,7 @@ func requireToken(tok string, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		http.Error(w, "unauthorized: open the pairing URL printed at startup (see <stateDir>/token)", http.StatusUnauthorized)
+		http.Error(w, "unauthorized: open the pairing URL printed at startup (token in ~/.config/herdview/token)", http.StatusUnauthorized)
 	})
 }
 
@@ -1632,12 +1660,6 @@ func handleNewAgent(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"pane": pane})
 }
 
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
 
 func main() {
 	// `herdview hook` runs as a Claude Code hook, not the server.
@@ -1646,8 +1668,8 @@ func main() {
 		return
 	}
 
-	addr := flag.String("addr", envOr("HERDVIEW_ADDR", "127.0.0.1:8848"),
-		"listen address (default loopback; set a tailnet IP or 0.0.0.0:8848 to reach it from a phone)")
+	addr := flag.String("addr", defaultAddr(),
+		"listen address (default $HERDVIEW_ADDR, else ~/.config/herdview/addr, else 127.0.0.1:8848)")
 	detach := flag.Bool("detach", false,
 		"start the server as a detached background process (idempotent) and exit")
 	flag.Parse()
@@ -1717,14 +1739,26 @@ func orDefault(s, def string) string {
 	return s
 }
 
-// portListening reports whether something already accepts connections on addr's
-// port (checked on loopback, which a 0.0.0.0 bind also covers).
+// probeAddr is where to reach a server bound to addr: the bound host itself, or
+// loopback for a wildcard bind. A tailnet-only bind doesn't answer on loopback.
+func probeAddr(addr string) (string, error) {
+	h, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", err
+	}
+	if h == "" || h == "0.0.0.0" || h == "::" {
+		h = "127.0.0.1"
+	}
+	return net.JoinHostPort(h, port), nil
+}
+
+// portListening reports whether something already accepts connections at addr.
 func portListening(addr string) bool {
-	_, port, err := net.SplitHostPort(addr)
+	p, err := probeAddr(addr)
 	if err != nil {
 		return false
 	}
-	c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", port), 300*time.Millisecond)
+	c, err := net.DialTimeout("tcp", p, 300*time.Millisecond)
 	if err != nil {
 		return false
 	}
@@ -1735,12 +1769,12 @@ func portListening(addr string) bool {
 // serverVersion returns the version reported by a herdview already serving on
 // addr's port ("" if it's unreachable or a build old enough to lack /api/version).
 func serverVersion(addr string) string {
-	_, port, err := net.SplitHostPort(addr)
+	p, err := probeAddr(addr)
 	if err != nil {
 		return ""
 	}
 	c := &http.Client{Timeout: 700 * time.Millisecond}
-	resp, err := c.Get("http://127.0.0.1:" + port + "/api/version")
+	resp, err := c.Get("http://" + p + "/api/version")
 	if err != nil {
 		return ""
 	}
