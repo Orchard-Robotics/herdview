@@ -13,6 +13,7 @@ module.exports = defineConfig({
   globalTeardown: require.resolve("./global-teardown"),
   use: {
     baseURL: env.BASE_URL,
+    extraHTTPHeaders: { Authorization: "Bearer " + env.TOKEN },
     viewport: { width: 390, height: 844 }, // phone-shaped, since herdview is phone-first
   },
   projects: [{ name: "chromium", use: { browserName: "chromium" } }],

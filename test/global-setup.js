@@ -13,7 +13,7 @@ const GO = process.env.GO || (fs.existsSync(LOCAL_GO) ? LOCAL_GO : "go");
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 function ping() {
   return new Promise((res) => {
-    const req = http.get(env.BASE_URL + "/api/agents", (r) => { r.resume(); res(r.statusCode); });
+    const req = http.get(env.BASE_URL + "/api/agents", { headers: { Authorization: "Bearer " + env.TOKEN } }, (r) => { r.resume(); res(r.statusCode); });
     req.on("error", () => res(0));
     req.setTimeout(1000, () => { req.destroy(); res(0); });
   });
@@ -43,6 +43,7 @@ module.exports = async () => {
       ...process.env,
       HOME: env.HOME,
       HERDR_BIN_PATH: env.MOCK,
+      HERDVIEW_TOKEN: env.TOKEN,
       MOCKHERDR_STATE: env.STATE,
       MOCKHERDR_SENDLOG: env.SENDLOG,
     },

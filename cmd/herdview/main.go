@@ -9,6 +9,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -59,8 +62,8 @@ func hostOnly(hostport string) string {
 	return hostport
 }
 
-// hostAllowed is the DNS-rebinding guard for a server that binds all interfaces
-// by default and steers terminals. It accepts loopback, this box's own hostname
+// hostAllowed is the DNS-rebinding guard for a server that steers terminals and
+// may be bound to a tailnet/LAN interface. It accepts loopback, this box's own hostname
 // (bare or as an FQDN prefix, e.g. solo / solo.tailnet.ts.net), and private/
 // tailnet IP literals (RFC-1918 + CGNAT 100.64/10) — the addresses a phone on
 // your LAN or tailnet actually uses — while rejecting arbitrary public domains.
@@ -114,6 +117,92 @@ func guard(next http.Handler) http.Handler {
 			}
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+const tokenCookie = "herdview_token"
+
+// configDir holds the token and the optional addr file. Unlike stateDir it
+// ignores HERDR_PLUGIN_STATE_DIR: herdr sets that for pane.focused launches but
+// scrubs it from the install step, and the token must be the same for both.
+func configDir() string {
+	if d := os.Getenv("HERDVIEW_CONFIG_DIR"); d != "" {
+		return d
+	}
+	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
+		return filepath.Join(d, "herdview")
+	}
+	return filepath.Join(os.Getenv("HOME"), ".config", "herdview")
+}
+
+// defaultAddr: HERDVIEW_ADDR, else the first line of <configDir>/addr, else
+// loopback. The file is how a tailnet bind survives herdr launching the plugin
+// with its own environment.
+func defaultAddr() string {
+	if a := os.Getenv("HERDVIEW_ADDR"); a != "" {
+		return a
+	}
+	if b, err := os.ReadFile(filepath.Join(configDir(), "addr")); err == nil {
+		if a, _, _ := strings.Cut(strings.TrimSpace(string(b)), "\n"); strings.TrimSpace(a) != "" {
+			return strings.TrimSpace(a)
+		}
+	}
+	return "127.0.0.1:8848"
+}
+
+// loadToken returns the pairing token: HERDVIEW_TOKEN, else <configDir>/token,
+// generated (0600) on first run. The server refuses to start without one.
+func loadToken() (string, error) {
+	if t := strings.TrimSpace(os.Getenv("HERDVIEW_TOKEN")); t != "" {
+		return t, nil
+	}
+	dir := configDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	p := filepath.Join(dir, "token")
+	if b, err := os.ReadFile(p); err == nil {
+		if t := strings.TrimSpace(string(b)); t != "" {
+			return t, nil
+		}
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	t := hex.EncodeToString(buf)
+	return t, os.WriteFile(p, []byte(t+"\n"), 0o600)
+}
+
+// requireToken rejects any request that doesn't carry the pairing token, as an
+// `Authorization: Bearer` header or the cookie. Opening `/?token=<token>` once
+// sets the cookie and redirects to the clean URL, which is how a phone pairs.
+// /api/version stays open: --detach probes it over loopback, and it's only a tag.
+func requireToken(tok string, next http.Handler) http.Handler {
+	ok := func(s string) bool { return subtle.ConstantTimeCompare([]byte(s), []byte(tok)) == 1 }
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/version" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if q := r.URL.Query(); q.Has("token") && ok(q.Get("token")) {
+			http.SetCookie(w, &http.Cookie{Name: tokenCookie, Value: tok, Path: "/", HttpOnly: true,
+				SameSite: http.SameSiteLaxMode, MaxAge: 365 * 24 * 3600})
+			q.Del("token")
+			u := *r.URL
+			u.RawQuery = q.Encode()
+			http.Redirect(w, r, u.RequestURI(), http.StatusSeeOther)
+			return
+		}
+		if b, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); found && ok(b) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if c, err := r.Cookie(tokenCookie); err == nil && ok(c.Value) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.Error(w, "unauthorized: open the pairing URL printed at startup (token in ~/.config/herdview/token)", http.StatusUnauthorized)
 	})
 }
 
@@ -1571,12 +1660,6 @@ func handleNewAgent(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"pane": pane})
 }
 
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
 
 func main() {
 	// `herdview hook` runs as a Claude Code hook, not the server.
@@ -1585,8 +1668,8 @@ func main() {
 		return
 	}
 
-	addr := flag.String("addr", envOr("HERDVIEW_ADDR", "0.0.0.0:8848"),
-		"listen address (default all interfaces so it's reachable over your tailnet/LAN)")
+	addr := flag.String("addr", defaultAddr(),
+		"listen address (default $HERDVIEW_ADDR, else ~/.config/herdview/addr, else 127.0.0.1:8848)")
 	detach := flag.Bool("detach", false,
 		"start the server as a detached background process (idempotent) and exit")
 	flag.Parse()
@@ -1627,9 +1710,14 @@ func main() {
 		}
 	}
 
+	tok, err := loadToken()
+	if err != nil {
+		log.Fatalf("herdview: no pairing token (refusing to serve unauthenticated): %v", err)
+	}
+
 	srv := &http.Server{
 		Addr:         *addr,
-		Handler:      guard(mux),
+		Handler:      guard(requireToken(tok, mux)),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 15 * time.Second,
 	}
@@ -1639,6 +1727,7 @@ func main() {
 		reach = net.JoinHostPort(orDefault(machineHost, "127.0.0.1"), port) // reachable by name over the tailnet/LAN
 	}
 	fmt.Printf("herdview → http://%s  (herdr: %s)\n", reach, herdrBin())
+	fmt.Printf("pair a browser once: http://%s/?token=%s\n", reach, tok)
 	log.Fatal(srv.ListenAndServe())
 }
 
@@ -1650,14 +1739,26 @@ func orDefault(s, def string) string {
 	return s
 }
 
-// portListening reports whether something already accepts connections on addr's
-// port (checked on loopback, which a 0.0.0.0 bind also covers).
+// probeAddr is where to reach a server bound to addr: the bound host itself, or
+// loopback for a wildcard bind. A tailnet-only bind doesn't answer on loopback.
+func probeAddr(addr string) (string, error) {
+	h, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", err
+	}
+	if h == "" || h == "0.0.0.0" || h == "::" {
+		h = "127.0.0.1"
+	}
+	return net.JoinHostPort(h, port), nil
+}
+
+// portListening reports whether something already accepts connections at addr.
 func portListening(addr string) bool {
-	_, port, err := net.SplitHostPort(addr)
+	p, err := probeAddr(addr)
 	if err != nil {
 		return false
 	}
-	c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", port), 300*time.Millisecond)
+	c, err := net.DialTimeout("tcp", p, 300*time.Millisecond)
 	if err != nil {
 		return false
 	}
@@ -1668,12 +1769,12 @@ func portListening(addr string) bool {
 // serverVersion returns the version reported by a herdview already serving on
 // addr's port ("" if it's unreachable or a build old enough to lack /api/version).
 func serverVersion(addr string) string {
-	_, port, err := net.SplitHostPort(addr)
+	p, err := probeAddr(addr)
 	if err != nil {
 		return ""
 	}
 	c := &http.Client{Timeout: 700 * time.Millisecond}
-	resp, err := c.Get("http://127.0.0.1:" + port + "/api/version")
+	resp, err := c.Get("http://" + p + "/api/version")
 	if err != nil {
 		return ""
 	}
@@ -1757,11 +1858,12 @@ func ensureDetached(addr string) error {
 	if err != nil {
 		return err
 	}
-	logf, err := os.OpenFile(filepath.Join(dir, "herdview.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logf, err := os.OpenFile(filepath.Join(dir, "herdview.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
 	defer logf.Close()
+	_ = logf.Chmod(0o600) // the log carries the pairing URL; tighten a pre-existing 0644 file too
 	cmd := exec.Command(exe, "--addr", addr)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // new session: detach from the launcher + herdr
