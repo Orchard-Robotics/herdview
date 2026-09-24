@@ -193,6 +193,74 @@ func TestGuard(t *testing.T) {
 	}
 }
 
+// TestRequireToken: no token → 401; bearer, cookie, and the ?token= pairing
+// redirect all get through; /api/version stays open for the --detach probe.
+func TestRequireToken(t *testing.T) {
+	h := requireToken("s3cret", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	do := func(target string, mod func(*http.Request)) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", target, nil)
+		if mod != nil {
+			mod(r)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	if c := do("/api/agents", nil).Code; c != http.StatusUnauthorized {
+		t.Errorf("no token: got %d want 401", c)
+	}
+	if c := do("/", nil).Code; c != http.StatusUnauthorized {
+		t.Errorf("no token on the UI: got %d want 401", c)
+	}
+	if c := do("/api/agents", func(r *http.Request) { r.Header.Set("Authorization", "Bearer wrong") }).Code; c != http.StatusUnauthorized {
+		t.Errorf("wrong bearer: got %d want 401", c)
+	}
+	if c := do("/api/agents?token=wrong", nil).Code; c != http.StatusUnauthorized {
+		t.Errorf("wrong query token: got %d want 401", c)
+	}
+	if c := do("/api/agents", func(r *http.Request) { r.Header.Set("Authorization", "Bearer s3cret") }).Code; c != http.StatusOK {
+		t.Errorf("bearer: got %d want 200", c)
+	}
+	if c := do("/api/agents", func(r *http.Request) { r.AddCookie(&http.Cookie{Name: tokenCookie, Value: "s3cret"}) }).Code; c != http.StatusOK {
+		t.Errorf("cookie: got %d want 200", c)
+	}
+	if c := do("/api/version", nil).Code; c != http.StatusOK {
+		t.Errorf("/api/version: got %d want 200", c)
+	}
+
+	w := do("/?token=s3cret&x=1", nil)
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/?x=1" {
+		t.Errorf("pairing: got %d → %q, want 303 → /?x=1", w.Code, w.Header().Get("Location"))
+	}
+	if ck := w.Result().Cookies(); len(ck) != 1 || ck[0].Value != "s3cret" || !ck[0].HttpOnly {
+		t.Errorf("pairing cookie: got %+v", ck)
+	}
+}
+
+// TestLoadToken: first run writes a 0600 token, later runs reuse it, and
+// HERDVIEW_TOKEN overrides the file.
+func TestLoadToken(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HERDVIEW_STATE_DIR", dir)
+	t.Setenv("HERDVIEW_TOKEN", "")
+
+	a, err := loadToken()
+	if err != nil || len(a) != 64 {
+		t.Fatalf("first run: got %q, %v", a, err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "token")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("token file: %v, %v (want mode 0600)", fi, err)
+	}
+	if b, _ := loadToken(); b != a {
+		t.Errorf("second run: got %q, want the persisted %q", b, a)
+	}
+	t.Setenv("HERDVIEW_TOKEN", "fromenv")
+	if c, _ := loadToken(); c != "fromenv" {
+		t.Errorf("env override: got %q", c)
+	}
+}
+
 // TestParseTranscript feeds a representative Claude JSONL slice and asserts the
 // bubble mapping: user string -> bubble, assistant text+tool_use -> bubble with
 // a tool chip, and a tool_result-only user turn is filtered out (not a bubble).

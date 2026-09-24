@@ -21,7 +21,8 @@ herdr plugin install Orchard-Robotics/herdview
 
 That's it — **no separate start step.** Installing downloads the binary and
 starts the server, and it re-ensures itself whenever you focus a pane, so it's
-up and reachable at `http://<this-host>:8848` (by tailnet name/IP — see below).
+up at `http://127.0.0.1:8848`. To reach it from your phone, see
+[Reaching it from your phone](#reaching-it-from-your-phone).
 
 The install step (`scripts/fetch.sh`) downloads the prebuilt binary for your
 OS/arch from this repo's latest [GitHub Release](../../releases), verifies its
@@ -85,12 +86,30 @@ prints a pointer. To link the app to a host, pair once (token from the app):
 
 ## Reaching it from your phone
 
-By default herdview binds **`0.0.0.0:8848`** (all interfaces), so on a machine on
-your tailnet you just browse `http://<host>:8848` — e.g. `http://solo:8848` by its
-MagicDNS name, or its `100.x` tailnet IP. No env, no port-forward. (A terminal
-app's web preview of `localhost:8848` works too.)
+By default herdview binds **loopback only** (`127.0.0.1:8848`), and every request
+must carry a **pairing token**. A terminal app's web preview of `localhost:8848`
+works as is. To reach it over your tailnet, bind a tailnet interface:
 
-Override the bind with `HERDVIEW_ADDR` (e.g. `127.0.0.1:8848` to force loopback).
+```sh
+export HERDVIEW_ADDR=100.x.y.z:8848   # this box's tailnet IP (or 0.0.0.0:8848 for all interfaces)
+```
+
+Set it in the environment herdr starts from, then reinstall (or stop the running
+server) so it restarts on the new address.
+
+**Pairing.** On first run herdview generates a random token in `<stateDir>/token`
+(mode `0600`; `<stateDir>` is herdr's plugin state dir, else
+`~/.local/state/herdview`) and prints the pairing URL to the server log:
+
+```
+pair a browser once: http://<host>:8848/?token=<token>
+```
+
+Open that URL once on each device: it sets an `HttpOnly` cookie and redirects to
+the clean URL. Scripts send `Authorization: Bearer <token>` instead. Set
+`HERDVIEW_TOKEN` to choose the token yourself. To rotate it, delete the token file
+and restart the server; every paired device must then pair again.
+
 The host allowlist auto-accepts loopback, this box's hostname, and private/tailnet
 IPs; add others with `HERDVIEW_ALLOW_HOSTS=host1,host2` (or `*` to disable the check).
 
@@ -113,7 +132,7 @@ Steering bugs (approvals, menu navigation) are only debuggable if you know
 to turn on a keystroke log:
 
 ```sh
-HERDVIEW_DEBUG_KEYS=1 herdview --addr 0.0.0.0:8848   # → <stateDir>/keys.log
+HERDVIEW_DEBUG_KEYS=1 herdview                       # → <stateDir>/keys.log
 HERDVIEW_DEBUG_KEYS=/tmp/keys.log herdview …          # → an explicit path
 ```
 
@@ -213,22 +232,21 @@ in the phone/desktop mirror instead of as a wall of text or a heavy artifact.
 
 ## Security
 
-herdview steers terminals, so treat the port as sensitive.
+herdview steers terminals, so treat the port and the token as sensitive.
 
-> ⚠️ **It binds all interfaces (`0.0.0.0`) by default** so it's reachable over
-> your tailnet with zero config. That means anyone who can reach `:8848` on any
-> network the host is attached to — **and there is no login** — can read
-> transcripts and drive your agents. **Only run it on a machine whose network is
-> gated** (a tailnet with ACLs, a trusted LAN, or behind a firewall). On an
-> untrusted network, set `HERDVIEW_ADDR=127.0.0.1:8848` to bind loopback-only and
-> reach it via an SSH/mosh port-forward instead.
-
-- The **Host + Origin allowlist** blocks browser DNS-rebinding / cross-site (CSRF)
+- **Loopback by default.** A fresh install listens on `127.0.0.1` only. Binding
+  any other address is an explicit choice (`HERDVIEW_ADDR`).
+- **Token on every request.** Every route except `GET /api/version` returns `401`
+  without the pairing token (bearer header, or the cookie the pairing URL sets).
+  The server refuses to start if it can't load or create a token. Anyone holding
+  the token can read transcripts and drive your agents, so never paste the
+  pairing URL anywhere shared.
+- **Host + Origin allowlist.** Blocks browser DNS-rebinding and cross-site (CSRF)
   POSTs: it accepts loopback, this box's hostname, and private/tailnet IPs, and
-  rejects arbitrary public domains. It is **not** authentication — it doesn't stop
-  a direct attacker on a network that can already reach the port.
-- No user login. The allowlist and the network gating are the whole story — size
-  your deployment accordingly.
+  rejects arbitrary public domains.
+- **Plain HTTP.** On a tailnet, WireGuard encrypts the traffic; on a LAN, the
+  token crosses the network in clear text. Prefer a tailnet IP over `0.0.0.0`, and
+  limit who can reach the port with tailnet ACLs.
 
 ## Structured chat bubbles (no setup)
 
@@ -268,7 +286,7 @@ is what new installs receive. Build the artifacts by hand with `sh scripts/build
       grid with a session tier, fanning out over each session's socket
 - [x] Multiple-choice answering, task checklist, artifact links, off-tab badge
 - [x] **Auto-start** — `--detach` background launcher started at install and
-      re-ensured on `pane.focused`; reachable over the tailnet by default, no manual step
+      re-ensured on `pane.focused`; no manual step
 - [ ] Approve/deny buttons refined from `herdr agent explain`'s matched blocker
 - [ ] **Boot-persistent service** (systemd user unit) so it survives a reboot unattended
 

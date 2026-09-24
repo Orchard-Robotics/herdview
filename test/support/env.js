@@ -16,6 +16,7 @@ const SERVER_LOG = path.join(RUNTIME, "server.log");
 const MOCK = path.join(ROOT, "mock-herdr.js");
 const PORT = 8899;
 const BASE_URL = "http://127.0.0.1:" + PORT;
+const TOKEN = "herdview-e2e-token"; // HERDVIEW_TOKEN for the test server; sent as a bearer on every request
 
 // transcript chain: pane w3:p1 -> pid 999001 -> sessionId testsid001 -> jsonl
 const CWD = "/tmp/hvtest";
@@ -90,7 +91,7 @@ function setSessions(list) {
 }
 
 module.exports = {
-  ROOT, REPO, RUNTIME, HOME, STATE, SENDLOG, SERVER_BIN, PIDFILE, SERVER_LOG, MOCK, PORT, BASE_URL,
+  ROOT, REPO, RUNTIME, HOME, STATE, SENDLOG, SERVER_BIN, PIDFILE, SERVER_LOG, MOCK, PORT, BASE_URL, TOKEN,
   CWD, SESSION_PID, SESSION_ID, TRANSCRIPT, DEFAULT_STATE,
   writeState, readState, patchState, resetState, resetSendlog, readSendlog,
   setTranscript, appendTranscript, userTurn, assistantTurn, resetScenario,
